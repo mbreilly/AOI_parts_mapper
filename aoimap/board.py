@@ -146,6 +146,23 @@ class Board:
             self._touch("; ".join(said), p)
         return p
 
+    def set_reference(self, uid: str, on: bool = True):
+        """Marks a project, from a board checked by hand, as the one other boards of its type are
+        checked against."""
+        from .check import reference_sides
+        p = self.project if self.project and self.project["uid"] == uid else pj.load(self.data, uid)
+        if on:
+            sides = reference_sides(self.data, uid)
+            if not sides:
+                raise ValueError("Line up a photo of at least one side first.")
+            p["reference"], p["reference_at"] = True, pj.now()
+            self._touch("Marked as the reference for checking other " + p["board"] + " boards ("
+                        + ", ".join(f"{s}: {n} parts" for s, n in sides.items()) + ")", p)
+        elif p.get("reference"):
+            p["reference"] = False
+            self._touch("No longer the reference for checking", p)
+        return p
+
     def _import_old_boards(self):
         """Boards saved by earlier versions (one folder per board name) become projects once."""
         for d in sorted((self.data / "boards").iterdir()):
@@ -536,7 +553,7 @@ class Board:
                           for p in d["parts"]]},
             "sides": {s: self.side_state(s) for s in ("front", "back")} if d else {},
             "project": None if not self.project else {k: self.project.get(k, "") for k in
-                                                      ("uid", "board", "serial", "notes", "created", "odb_file", "bom_file")},
+                                                      ("uid", "board", "serial", "notes", "created", "odb_file", "bom_file", "reference")},
         }
 
     def write_csv(self):

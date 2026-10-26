@@ -20,6 +20,7 @@
     <button data-tab="front">3  FRONT</button>
     <button data-tab="back">4  BACK</button>
     <button data-tab="map">5  MAP</button>
+    <button data-tab="check">CHECK A BOARD</button>
     <button data-tab="history">HISTORY</button>
   </nav>
 
@@ -176,22 +177,80 @@
         <div class="row">
           <a class="btn accent" id="dl-csv" href="/api/parts_map.csv">DOWNLOAD CSV</a>
           <a class="btn" id="dl-json" href="/api/design.json" download="design.json">DESIGN JSON</a>
+          <button id="map-ref">USE AS THE REFERENCE FOR CHECKS</button>
         </div>
+        <p class="dim" id="map-ref-note">Once this board has been checked by hand, make it the reference: other boards of this
+          type can then be checked against it on the Check a board tab.</p>
         <p class="dim" id="map-folder"></p>
         <h3>CAN'T BE CHECKED</h3>
         <div class="tablewrap"><table id="unchecked"><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody></tbody></table></div>
       </div>
     </div>
   </section>
+  <!-- CHECK A BOARD -->
+  <section id="tab-check" class="tab" hidden>
+    <div class="cols">
+      <div class="col viewcol">
+        <div class="viewer" id="ck-viewer">
+          <video id="ck-video" autoplay playsinline muted hidden></video>
+          <img id="ck-ghost" class="ghost" alt="" hidden>
+          <img id="ck-photo" alt="" hidden>
+          <svg id="ck-marks" class="marks"></svg>
+          <div id="ck-placeholder" class="placeholder">Start a check, then take or choose a photo of the board.</div>
+        </div>
+        <div class="row" id="ck-cam-row">
+          <button id="ck-cam-start">START CAMERA</button>
+          <select id="ck-cam-list" hidden></select>
+          <button id="ck-cam-take" class="accent" hidden>TAKE PHOTO</button>
+          <label class="btn">CHOOSE FILE<input type="file" id="ck-file" accept="image/*" hidden></label>
+          <span class="sep"></span>
+          <label class="check"><input type="checkbox" id="ck-ghost-on" checked> Ghost of the reference</label>
+          <span class="sep"></span>
+          <div class="seg" id="ck-view"><button data-v="result" class="on">RESULT</button><button data-v="photo">PHOTO</button></div>
+        </div>
+      </div>
+      <div class="col sidecol">
+        <div id="ck-start">
+          <h2>CHECK A BOARD</h2>
+          <p class="dim">A quick look that a board's polarised parts are all the right way round, against a board of the same
+            type that was mapped and checked by hand (the reference). Not a production test.</p>
+          <div class="grid2">
+            <span class="lab">BOARD TYPE</span><select id="ck-ref"></select>
+            <span class="lab">SERIAL</span><input id="ck-serial" placeholder="Serial number or label">
+            <span class="lab">NOTES</span><textarea id="ck-notes" rows="2" placeholder="Why it's here, who's repairing it..."></textarea>
+          </div>
+          <div class="row"><button id="ck-go" class="accent">START CHECK</button></div>
+          <p class="dim" id="ck-noref" hidden>No reference yet. Map a board that was checked by hand (Files to Map), then press
+            <b>Use as the reference for checks</b> on the Map tab.</p>
+        </div>
+        <div id="ck-run" hidden>
+          <h2 id="ck-title"></h2>
+          <div class="row"><span class="badge" id="ck-result"></span><span class="dim" id="ck-sub"></span></div>
+          <div class="seg" id="ck-sides"></div>
+          <div id="ck-msg" class="warn" hidden></div>
+          <div id="ck-points" hidden>
+            <h3>CLICK THE FIDUCIALS</h3>
+            <p class="dim">Click each one on the photo, in order. Clicks snap to the pad.</p>
+            <div id="ck-prompts" class="list"></div>
+            <div class="row"><button id="ck-clear">CLEAR</button><button id="ck-align" class="accent">LINE UP</button></div>
+          </div>
+          <div id="ck-flagged"></div>
+          <div id="ck-ok"></div>
+          <div class="row"><button id="ck-new">CHECK ANOTHER BOARD</button><button data-goto="history" data-hist="checks">PAST CHECKS</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- HISTORY -->
   <section id="tab-history" class="tab" hidden>
     <div class="cols">
       <div class="col">
-        <h2>PAST PROJECTS</h2>
+        <div class="row"><div class="seg" id="hist-kind"><button data-k="projects" class="on">MAPPED BOARDS</button><button data-k="checks">CHECKS</button></div></div>
         <div class="row"><input id="hist-search" placeholder="Board, serial, notes or file name (* matches any part)"></div>
         <p class="dim" id="hist-status"></p>
         <div class="tablewrap"><table id="hist-list"><thead><tr>
-          <th>Updated</th><th>Board</th><th>Serial</th><th>Front</th><th>Back</th></tr></thead><tbody></tbody></table></div>
+          <th>Updated</th><th>Board</th><th>Serial</th><th id="hist-c4">Front</th><th id="hist-c5">Back</th></tr></thead><tbody></tbody></table></div>
       </div>
       <div class="col wide" id="hist-detail">
         <p class="dim">Choose a project to see its files, photos and log.</p>

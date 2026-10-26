@@ -175,6 +175,7 @@ def row(data: Path, p: dict, s: dict | None = None) -> dict:
     """One line about a project for the history list (the same shape the database gives)."""
     s = s or summary(data, p["uid"])
     out = {k: p.get(k, "") for k in ("uid", "board", "serial", "notes", "station", "created", "updated", "odb_file", "bom_file")}
+    out["reference"] = bool(p.get("reference"))
     out.update(units=s["units"], parts=s["parts"], closeups=s["closeups"])
     for side in SIDES:
         out[side] = {k: s[side][k] for k in ("parts", "photo", "aligned", "checkable")}

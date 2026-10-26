@@ -13,6 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import cv2
+
+from . import check as ck
 from . import db as dblib
 from . import photo as ph
 from . import projects as pj
@@ -29,6 +32,8 @@ class App:
         self.board = Board(data_dir)
         self.history = dblib.History(data_dir, db_config)
         self.board.on_change = self.history.changed
+        self.checks = ck.Checks(data_dir)
+        self.checks.on_change = self.history.changed_check
         self.lock = threading.Lock()
 
 
@@ -89,8 +94,13 @@ def make_handler(app: App):
                     return self._send(200, (STATIC / parts[1]).read_bytes(), ctype, cache=True)
                 if parts[0] != "api":
                     return self._err("Not found", 404)
+                if parts[1:3] == ["history", "checks"]:
+                    return self._json(app.history.search_checks(q.get("q", ""), q.get("limit", 50)))
                 if parts[1:2] == ["history"]:
                     return self._history_get(parts[2:], q)
+                if parts[1:2] == ["check"]:
+                    with app.lock:
+                        return self._check_get(parts[2:], q)
                 b = app.board
                 with app.lock:
                     if parts[1:] == ["state"]:
@@ -167,6 +177,57 @@ def make_handler(app: App):
                 return None
             return self._err("Not found", 404)
 
+        def _check_get(self, r, q):
+            c = app.checks
+            if r == ["state"]:
+                return self._json(c.state())
+            if len(r) == 3 and r[0] == "side" and r[2] == "anchors":
+                return self._json(c.anchors(r[1]))
+            if len(r) == 1:
+                return self._json(c.detail(r[0]))
+            if len(r) == 4 and r[1] == "file":
+                f = ck.file_path(app.board.data, r[0], f"{r[2]}/{r[3]}")
+                if q.get("thumb"):
+                    w = max(80, min(1600, int(q["thumb"])))
+                    img = cv2.imread(str(f), cv2.IMREAD_REDUCED_COLOR_2)
+                    img = cv2.resize(img, (w, round(img.shape[0] * w / img.shape[1])), interpolation=cv2.INTER_AREA)
+                    return self._send(200, cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes(), "image/jpeg")
+                return self._send(200, f.read_bytes(), "image/jpeg")
+            if len(r) == 4 and r[1] == "crop":
+                return self._send(200, c.crop(r[0], r[2], r[3], q.get("which", "board")), "image/jpeg", cache=False)
+            return self._err("Not found", 404)
+
+        def _check_post(self, r):
+            c = app.checks
+            if r == ["start"]:
+                j = self._jbody()
+                c.start(j["reference"], j.get("serial", ""), j.get("notes", ""))
+            elif r == ["open"]:
+                c.open(self._jbody()["uid"])
+            elif r == ["close"]:
+                c.close()
+            elif len(r) == 3 and r[0] == "side" and r[1] in ("front", "back"):
+                side, what = r[1], r[2]
+                if what == "photo":
+                    c.photo(side, self._body())
+                elif what == "snap":
+                    xy, snapped = c.snap(side, self._jbody()["xy"])
+                    return self._json({"xy": xy, "snapped": snapped})
+                elif what == "align":
+                    c.align_points(side, self._jbody()["points"])
+                elif what == "answer":
+                    j = self._jbody()
+                    c.answer(side, j["ref"], j.get("answer"))
+                else:
+                    return self._err("Not found", 404)
+            elif len(r) == 2 and r[1] == "info":
+                j = self._jbody()
+                c.set_info(r[0], j.get("serial"), j.get("notes"))
+                return self._json(c.detail(r[0]))
+            else:
+                return self._err("Not found", 404)
+            return self._json(c.state())
+
         def do_POST(self):
             u = urlparse(self.path)
             parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
@@ -183,6 +244,8 @@ def make_handler(app: App):
                             return self._err("Upload kind must be odb or bom.")
                         b.add_file(kind, q.get("name", kind), self._body())
                         return self._json(b.state())
+                    if r[:1] == ["check"]:
+                        return self._check_post(r[1:])
                     if len(r) == 3 and r[0] == "history":
                         uid, what = r[1], r[2]
                         if what == "open":
@@ -194,6 +257,9 @@ def make_handler(app: App):
                         if what == "info":
                             j = self._jbody()
                             b.set_info(uid, j.get("serial"), j.get("notes"))
+                            return self._json(app.history.detail(uid))
+                        if what == "reference":
+                            b.set_reference(uid, bool(self._jbody().get("on", True)))
                             return self._json(app.history.detail(uid))
                     if r == ["columns"]:
                         b.set_columns(self._jbody())

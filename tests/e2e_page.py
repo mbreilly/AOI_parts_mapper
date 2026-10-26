@@ -109,6 +109,27 @@ try:
         st = pg.evaluate("fetch('/api/state').then(r => r.json())")
         assert st["project"]["serial"] == "PTC-0042" and st["sides"]["back"]["aligned"], st["project"]
         print("reopened:", st["project"]["uid"], st["sides"]["back"]["summary"])
+        # make it the reference, then check another board with C3 and C7 the wrong way round
+        cv2.imwrite(str(tmp / "other_front.jpg"), fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280), reversed_refs=("C3", "C7")),
+                    [cv2.IMWRITE_JPEG_QUALITY, 95])
+        pg.click("button[data-tab=map]"); pg.click("#map-ref"); pg.wait_for_timeout(500)
+        assert "✓" in pg.inner_text("#map-ref")
+        pg.click("button[data-tab=check]"); pg.wait_for_selector("#ck-ref option", state="attached")
+        pg.fill("#ck-serial", "REPAIR-17"); pg.click("#ck-go"); pg.wait_for_selector("#ck-run:not([hidden])")
+        pg.set_input_files("#ck-file", str(tmp / "other_front.jpg"))
+        pg.wait_for_selector("#ck-flagged .flag")
+        pg.wait_for_function("[...document.querySelectorAll('#ck-flagged img, #ck-photo')].every(i => i.complete && i.naturalWidth > 0)")
+        print("check:", pg.inner_text("#ck-sub"), "|", pg.inner_text("#ck-msg"))
+        pg.screenshot(path=str(out / "10-check.png"))
+        for ref in pg.eval_on_selector_all("#ck-flagged [data-ans=correct]", "bs => bs.map(b => b.dataset.ref)"):
+            pg.click(f"#ck-flagged [data-ans={'wrong' if ref in ('C3', 'C7') else 'correct'}][data-ref='{ref}']")
+            pg.wait_for_timeout(300)
+        assert pg.inner_text("#ck-result") == "FAIL", pg.inner_text("#ck-result")
+        print("check result:", pg.inner_text("#ck-result"), "|", pg.inner_text("#ck-sub"))
+        pg.screenshot(path=str(out / "11-check-answered.png"))
+        pg.click("[data-goto=history][data-hist=checks]"); pg.wait_for_selector("#hist-detail .badge.FAIL")
+        pg.wait_for_timeout(500)
+        pg.screenshot(path=str(out / "12-history-checks.png"), full_page=True)
         br.close()
 finally:
     srv.terminate()

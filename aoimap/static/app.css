@@ -77,8 +77,18 @@ textarea { font: 13px var(--font); color: var(--ink); background: color-mix(in s
 .list .ok { color: var(--accent); font-weight: 700; }
 .kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 10px; font-size: 13px; }
 .kv b { font-weight: 400; color: var(--dimInk); opacity: .8; }
-td a { color: var(--accent); text-decoration: none; }
+td a, .kv a { color: var(--accent); text-decoration: none; }
 td a:hover { text-decoration: underline; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 3px; font-weight: 700; font-size: 13px; letter-spacing: .05em;
+  background: var(--buttonOff); }
+.badge.PASS { background: #3E8E41; color: #fff; } .badge.FAIL { background: #C0392B; color: #fff; } .badge.OPEN { background: var(--accent); color: var(--panelEdge); }
+.flag { border: 1px solid var(--panelEdge); border-radius: 4px; padding: 8px; margin: 8px 0; background: color-mix(in srgb, var(--panelEdge) 35%, transparent); }
+.flag.answered { opacity: .7; }
+.flag .pics { display: flex; gap: 8px; margin: 6px 0; }
+.flag figure { margin: 0; font-size: 11px; text-align: center; color: var(--dimInk); }
+.flag img { display: block; width: 130px; height: 130px; object-fit: contain; background: var(--panelEdge); border-radius: 3px; }
+.flag button.on.wrong { background: #C0392B; color: #fff; }
+.st-ok { color: #6FCF73; } .st-reversed, .st-rotated, .st-wrong { color: #FF6B5B; font-weight: 700; } .st-check { color: var(--accent); }
 .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
 .gallery a { display: block; color: var(--dimInk); text-decoration: none; font-size: 12px; text-align: center; }

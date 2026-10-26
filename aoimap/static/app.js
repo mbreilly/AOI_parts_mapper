@@ -91,23 +91,29 @@ $("#tabs").addEventListener("click", e => {
   goTab(b.dataset.tab);
 });
 function goTab(t) {
-  tab = t; ui.closeup = null; stopCamera(); say("");
+  tab = t; ui.closeup = null; stopCamera(); stopCk(); say("");
   render();
   if (tab === "front" || tab === "back") loadAnchors(tab);
   if (tab === "history") loadHistory();
+  if (tab === "check") loadCheck();
 }
-document.addEventListener("click", e => { const b = e.target.closest("[data-goto]"); if (b) goTab(b.dataset.goto); });
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-goto]"); if (!b) return;
+  if (b.dataset.hist) setHistKind(b.dataset.hist, false);
+  goTab(b.dataset.goto);
+});
 
 function render() {
   $$("#tabs button").forEach(b => {
     b.classList.toggle("on", b.dataset.tab === tab);
-    b.disabled = !["files", "history"].includes(b.dataset.tab) && !(S && S.design);
+    b.disabled = !["files", "history", "check"].includes(b.dataset.tab) && !(S && S.design);
   });
   $("#tab-files").hidden = tab !== "files";
   $("#tab-parts").hidden = tab !== "parts";
   $("#tab-side").hidden = !(tab === "front" || tab === "back");
   $("#tab-map").hidden = tab !== "map";
   $("#tab-history").hidden = tab !== "history";
+  $("#tab-check").hidden = tab !== "check";
   if (S && S.design) $("#sub").textContent = `${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}  ·  ${countAll()} polarised parts`;
   if (tab === "files") renderFiles();
   if (tab === "parts") renderParts();
@@ -501,23 +507,48 @@ function renderMap() {
   }
   html += `</div>`;
   $("#map-summary").innerHTML = html;
+  const isRef = S.project && S.project.reference;
+  $("#map-ref").textContent = isRef ? "THE REFERENCE FOR CHECKS ✓" : "USE AS THE REFERENCE FOR CHECKS";
+  $("#map-ref").classList.toggle("on", !!isRef);
+  $("#map-ref-note").textContent = isRef ? `Other ${S.project.board} boards are checked against this one on the Check a board tab. Press again to stop using it.`
+    : "Once this board has been checked by hand, make it the reference: other boards of this type can then be checked against it on the Check a board tab.";
   $("#map-folder").textContent = `Everything for this board is kept with the project in the app's data folder under projects/${S.project ? S.project.uid : ""}/ (the ODB++ and BOM, design.json, parts_map.csv, and each side's reference.jpg, alignment.json, parts.json and map.jpg), and listed on the History tab.`;
   $("#unchecked tbody").innerHTML = rows.map(r => `<tr><td>${r.side}</td><td>${esc(r.ref)}</td><td>${KIND_NAMES[r.kind]}</td><td>${esc(r.value)}</td><td>${esc(r.reason)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="no">Nothing yet. Line up a photo of each side first.</td></tr>`;
 }
 
+$("#map-ref").addEventListener("click", async () => {
+  if (!S || !S.project) return;
+  try {
+    const on = !S.project.reference;
+    await post(`/api/history/${encodeURIComponent(S.project.uid)}/reference`, { on });
+    S.project.reference = on; recentAt = 0;
+    say(on ? "This board is now the reference. Check other boards of this type on the Check a board tab." : "No longer the reference.");
+    render();
+  } catch (e) { say(e.message, true); }
+});
+
 // ---- history -------------------------------------------------------------------------------
-const H = { q: "", sel: null, list: [], timer: null };
+const H = { q: "", sel: null, list: [], timer: null, kind: "projects" };
+function setHistKind(k, load = true) {
+  if (H.kind !== k) { H.kind = k; H.sel = null; $("#hist-detail").innerHTML = ""; }
+  $$("#hist-kind button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
+  $("#hist-c4").textContent = k === "checks" ? "Result" : "Front";
+  $("#hist-c5").textContent = k === "checks" ? "Flagged" : "Back";
+  if (load) loadHistory();
+}
+$("#hist-kind").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setHistKind(b.dataset.k); });
 const kb = n => n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} kB`;
 const fileUrl = (uid, path, extra = "") => `/api/history/${encodeURIComponent(uid)}/file/${path.split("/").map(encodeURIComponent).join("/")}${extra}`;
 async function loadHistory() {
+  if (H.kind === "checks") return loadChecks();
   try {
     const h = await api(`/api/history?limit=200&q=${encodeURIComponent(H.q)}`);
     H.list = h.projects;
     $("#hist-status").textContent = (h.source === "database" ? `${h.total} project(s) in the database.` : h.status) +
       (H.q ? ` ${h.projects.length} match.` : "");
     $("#hist-list tbody").innerHTML = h.projects.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
-      <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}${r.uid === h.current ? ` <span class="ok">OPEN</span>` : ""}</td><td>${esc(r.serial)}</td>
+      <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}${r.uid === h.current ? ` <span class="ok">OPEN</span>` : ""}${r.reference ? ` <span class="dim">REFERENCE</span>` : ""}</td><td>${esc(r.serial)}</td>
       <td>${sideCell(r.front)}</td><td>${sideCell(r.back)}</td></tr>`).join("")
       || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No projects yet."}</td></tr>`;
     if (!H.sel && h.projects.length) showProject(h.projects[0].uid);
@@ -526,7 +557,68 @@ async function loadHistory() {
 }
 const sideCell = s => !s.parts ? `<span class="dim">none</span>` : s.aligned ? `${s.checkable}/${s.parts}` : s.photo ? "photo" : `<span class="dim">–</span>`;
 $("#hist-search").addEventListener("input", e => { H.q = e.target.value; clearTimeout(H.timer); H.timer = setTimeout(loadHistory, 300); });
-$("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[data-uid]"); if (tr) showProject(tr.dataset.uid); });
+$("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[data-uid]"); if (tr) (H.kind === "checks" ? showCheck : showProject)(tr.dataset.uid); });
+
+async function loadChecks() {
+  try {
+    const h = await api(`/api/history/checks?limit=200&q=${encodeURIComponent(H.q)}`);
+    $("#hist-status").textContent = (h.source === "database" ? `${h.total} check(s) in the database.` : h.status) + (H.q ? ` ${h.checks.length} match.` : "");
+    const flagged = r => { const n = r.front.flagged + r.back.flagged, w = r.front.wrong.length + r.back.wrong.length; return w ? `<span class="st-wrong">${w} wrong</span>` : n ? `${n} looked at` : "none"; };
+    $("#hist-list tbody").innerHTML = h.checks.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
+      <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}</td><td>${esc(r.serial)}</td>
+      <td><span class="badge ${esc(r.result)}">${esc(r.result)}</span></td><td>${flagged(r)}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No boards checked yet."}</td></tr>`;
+    if (!H.sel && h.checks.length) showCheck(h.checks[0].uid);
+    else if (H.sel) showCheck(H.sel);
+  } catch (e) { say(e.message, true); }
+}
+
+const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it" };
+const ckFile = (uid, side, name, extra = "") => `/api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
+const ckCrop = (uid, side, ref, which) => `/api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
+function flaggedHtml(c, side, editable) {
+  const st = c.sides[side] || {}, rs = (st.results || []).filter(r => r.status !== "ok");
+  return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
+      <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · <span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>
+        <div class="dim">${esc(r.why || "")}</div></div>
+      <div class="pics"><figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "reference")}" alt="">reference</figure>
+        <figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "board")}" alt="">this board</figure></div>
+      ${editable ? `<div class="row"><button data-ans="correct" data-ref="${esc(r.ref)}" class="${r.answer === "correct" ? "on" : ""}">RIGHT WAY ROUND</button>
+        <button data-ans="wrong" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" ? "on wrong" : ""}">WRONG</button></div>`
+      : `<div>${r.answer === "wrong" ? `<span class="st-wrong">Answered: wrong</span>` : r.answer === "correct" ? "Answered: right way round" : `<span class="st-check">Not answered</span>`}</div>`}
+    </div>`).join("");
+}
+
+async function showCheck(uid) {
+  H.sel = uid;
+  $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === uid));
+  let c;
+  try { c = await api(`/api/check/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
+  if (H.sel !== uid) return;
+  const sides = Object.keys(c.sides);
+  $("#hist-detail").innerHTML = `
+    <h2>${esc(c.board)}${c.serial ? "  ·  " + esc(c.serial) : ""}  <span class="badge ${esc(c.result)}">${esc(c.result)}</span></h2>
+    <div class="row"><button class="accent" data-ckopen="${esc(uid)}">OPEN IN CHECK A BOARD</button></div>
+    <div class="kv">
+      <b>Check</b><span>${esc(c.uid)}</span>
+      <b>Started</b><span>${esc(c.created)} on ${esc(c.station)}</span>
+      <b>Reference</b><span>${c.reference_serial === null ? esc(c.reference) + " (no longer there)" : `<a href="#" data-showproj="${esc(c.reference)}">${esc(c.reference)}</a>${c.reference_serial ? " · " + esc(c.reference_serial) : ""}`}</span>
+      ${sides.map(s => { const st = c.sides[s]; const rs = st.results || []; return `<b>${s === "front" ? "Front" : "Back"}</b><span>${st.aligned ? `${rs.length} parts checked, ${rs.filter(r => r.status !== "ok").length} flagged` : st.photo ? "photo not lined up" : "not checked"}</span>`; }).join("")}
+      <b>Notes</b><span>${esc(c.notes) || "–"}</span>
+      <b>Folder</b><span class="mono">${esc(c.folder)}</span>
+    </div>
+    <h3>RESULT PHOTOS</h3>
+    <div class="gallery">${sides.filter(s => c.sides[s].aligned).map(s => `<a href="${ckFile(uid, s, "result.jpg")}" target="_blank" rel="noopener"><img loading="lazy" src="${ckFile(uid, s, "result.jpg", `?thumb=360&v=${encodeURIComponent(c.updated)}`)}" alt=""><span>${s}</span></a>`).join("") || `<p class="dim">No side was lined up.</p>`}</div>
+    ${sides.map(s => { const h = flaggedHtml(c, s, false); return h ? `<h3>FLAGGED ON THE ${s.toUpperCase()}</h3>${h}` : ""; }).join("")}
+    <h3>LOG</h3>
+    <div class="list log">${c.log.map(e => `<div><span class="dim">${esc(e.at)}</span><span class="grow">${esc(e.what)}</span></div>`).join("")}</div>`;
+}
+document.addEventListener("click", e => {
+  const o = e.target.closest("[data-ckopen]");
+  if (o) { post("/api/check/open", { uid: o.dataset.ckopen }).then(st => { CK.st = st; goTab("check"); }).catch(err => say(err.message, true)); }
+  const pr = e.target.closest("[data-showproj]");
+  if (pr) { e.preventDefault(); setHistKind("projects", false); H.sel = pr.dataset.showproj; loadHistory(); }
+});
 
 async function showProject(uid) {
   H.sel = uid;
@@ -547,6 +639,7 @@ async function showProject(uid) {
     <div class="row">
       ${isOpen ? `<button data-goto="files" class="accent">OPEN NOW</button>` : `<button class="accent" data-reopen="${esc(uid)}">REOPEN</button>`}
       <button data-newfrom="${esc(uid)}">NEW BOARD, SAME DESIGN</button>
+      <button id="hd-ref" class="${d.reference ? "on" : ""}">${d.reference ? "REFERENCE FOR CHECKS ✓" : "USE AS REFERENCE"}</button>
       ${csv ? `<a class="btn" href="${fileUrl(uid, csv.path, `?download=${encodeURIComponent(d.board + (d.serial ? "_" + d.serial : "") + "_parts_map.csv")}`)}">DOWNLOAD CSV</a>` : ""}
     </div>
     <div class="kv">
@@ -578,6 +671,14 @@ async function showProject(uid) {
       ${d.files.map(f => `<tr><td><a href="${fileUrl(uid, f.path, `?download=${encodeURIComponent(named(f).split("/").pop())}`)}">${esc(f.path)}</a>${named(f) !== f.path ? ` <span class="dim">${esc(named(f))}</span>` : ""}</td><td>${esc(f.kind)}${f.side ? " · " + f.side : ""}</td><td>${kb(f.bytes)}</td><td>${esc(f.modified.slice(0, 16))}</td></tr>`).join("")}</tbody></table></div>
     <h3>LOG</h3>
     <div class="list log">${d.log.map(e => `<div><span class="dim">${esc(e.at)}</span><span class="grow">${esc(e.what)}</span></div>`).join("") || `<div class="dim">Nothing logged.</div>`}</div>`;
+  $("#hd-ref").addEventListener("click", async () => {
+    try {
+      await post(`/api/history/${encodeURIComponent(uid)}/reference`, { on: !d.reference });
+      if (isOpen) S.project.reference = !d.reference;
+      say(!d.reference ? "Now the reference for checking other boards of this type." : "No longer the reference.");
+      loadHistory();
+    } catch (e) { say(e.message, true); }
+  });
   $("#hd-save").addEventListener("click", async () => {
     const r = await saveInfo(uid, { serial: $("#hd-serial").value, notes: $("#hd-notes").value });
     if (!r) return;
@@ -585,6 +686,159 @@ async function showProject(uid) {
     say("Saved."); loadHistory();
   });
 }
+
+// ---- check a board --------------------------------------------------------------------------
+const CK = { st: null, side: "front", view: "result", stream: null, pts: {}, cur: 0, anchors: null, ghostOn: true };
+async function loadCheck() {
+  try { CK.st = await api("/api/check/state"); } catch (e) { say(e.message, true); }
+  renderCheck();
+}
+function ckAct(fn, done) {
+  return (async () => {
+    try { const st = await fn(); if (st && st.references) CK.st = st; if (done) say(done); }
+    catch (e) { say(e.message, true); }
+    renderCheck();
+  })();
+}
+function stopCk() { if (CK.stream) { CK.stream.getTracks().forEach(t => t.stop()); CK.stream = null; } }
+
+function renderCheck() {
+  const st = CK.st; if (!st) return;
+  const c = st.check;
+  $("#ck-start").hidden = !!c; $("#ck-run").hidden = !c;
+  if (!c) {
+    const refs = st.references.filter(r => Object.keys(r.sides).length);
+    $("#ck-ref").innerHTML = refs.map(r => `<option value="${esc(r.uid)}">${esc(r.board)} · reference ${esc(r.serial || r.uid)} (${Object.keys(r.sides).join(" and ")})</option>`).join("");
+    $("#ck-noref").hidden = !!refs.length; $("#ck-go").disabled = !refs.length;
+  } else {
+    const sides = Object.keys(c.sides);
+    if (!sides.includes(CK.side)) CK.side = sides[0];
+    const s = c.sides[CK.side] || {};
+    $("#ck-title").textContent = `${c.board}${c.serial ? "  ·  " + c.serial : ""}`;
+    $("#ck-result").className = `badge ${c.result}`; $("#ck-result").textContent = c.result;
+    const rs = Object.values(c.sides).flatMap(x => x.results || []), open = rs.filter(r => r.status !== "ok" && !r.answer).length;
+    $("#ck-sub").textContent = c.result === "OPEN" ? (rs.length ? `${open} flagged part(s) to look at` : "Take a photo of the board") :
+      c.result === "PASS" ? `All ${rs.length} parts checked are the right way round${sides.some(x => !c.sides[x].aligned) ? " (" + sides.filter(x => c.sides[x].aligned).join(" and ") + " only)" : ""}` :
+      `Wrong: ${rs.filter(r => r.answer === "wrong").map(r => r.ref).join(", ")}`;
+    $("#ck-sides").innerHTML = sides.map(x => { const y = c.sides[x]; const f = (y.results || []).filter(r => r.status !== "ok" && !r.answer).length;
+      return `<button data-side="${x}" class="${x === CK.side ? "on" : ""}">${x.toUpperCase()}${y.aligned ? (f ? ` · ${f}` : " ✓") : ""}</button>`; }).join("");
+    $("#ck-msg").hidden = !s.message; $("#ck-msg").textContent = s.message || "";
+    $("#ck-points").hidden = !(s.photo && !s.aligned);
+    if (s.photo && !s.aligned) loadCkAnchors();
+    const fl = flaggedHtml(c, CK.side, true);
+    $("#ck-flagged").innerHTML = s.aligned ? (fl ? `<h3>FLAGGED: LOOK AT EACH ONE</h3>${fl}` : `<p class="st-ok">Nothing flagged on the ${CK.side}.</p>`) : "";
+    const ok = (s.results || []).filter(r => r.status === "ok");
+    $("#ck-ok").innerHTML = s.aligned ? `<h3>RIGHT WAY ROUND (${ok.length})</h3><p class="dim">${esc(ok.map(r => r.ref).join(", ") || "none")}</p>` +
+      ((s.skipped || []).length ? `<h3>NOT CHECKED HERE (${s.skipped.length})</h3><p class="dim">Look at these by eye: ${esc(s.skipped.map(r => r.ref).join(", "))}.</p>` : "") : "";
+  }
+  renderCkViewer();
+}
+
+function renderCkViewer() {
+  const c = CK.st && CK.st.check, s = c ? (c.sides[CK.side] || {}) : {};
+  const live = !!CK.stream;
+  $("#ck-video").hidden = !live;
+  $("#ck-cam-start").textContent = live ? "STOP CAMERA" : "START CAMERA";
+  $("#ck-cam-take").hidden = !live; $("#ck-cam-list").hidden = !live;
+  $("#ck-cam-row").style.visibility = c ? "visible" : "hidden";
+  $$("#ck-view button").forEach(b => b.classList.toggle("on", b.dataset.v === CK.view));
+  $("#ck-view").hidden = !s.aligned;
+  const ghost = $("#ck-ghost");
+  ghost.hidden = !(live && CK.ghostOn && c);
+  if (!ghost.hidden) {
+    const src = `/api/history/${encodeURIComponent(c.reference)}/file/${CK.side}/reference.jpg?thumb=1600`;
+    if (!ghost.src.endsWith(src)) ghost.src = src;
+  }
+  const img = $("#ck-photo");
+  let src = null;
+  if (!live && c && s.photo) {
+    src = s.aligned && CK.view === "result" ? ckFile(c.uid, CK.side, "result.jpg") : ckFile(c.uid, CK.side, "photo.jpg");
+    src += `?v=${encodeURIComponent(c.updated)}`;
+  }
+  img.hidden = !src;
+  if (src && !img.src.endsWith(src)) img.src = src;
+  $("#ck-placeholder").hidden = live || !!src;
+  $("#ck-placeholder").textContent = c ? `No photo of the ${CK.side} yet. Start the camera, line the board up with the ghost, and take the photo, or choose a file.` : "Start a check, then take or choose a photo of the board.";
+  $("#ck-viewer").classList.toggle("clicking", !!(src && s.photo && !s.aligned));
+  drawCkMarks();
+}
+
+async function loadCkAnchors() {
+  const key = `${CK.st.check.uid}/${CK.side}`;
+  if (CK.anchors && CK.anchors.key === key) return renderCkPrompts();
+  try { CK.anchors = { key, ...(await api(`/api/check/side/${CK.side}/anchors`)) }; CK.pts = {}; CK.cur = 0; }
+  catch (e) { CK.anchors = { key, prompts: [] }; $("#ck-prompts").innerHTML = `<div class="dim">${esc(e.message)}</div>`; return; }
+  renderCkPrompts();
+}
+function renderCkPrompts() {
+  const P = CK.anchors.prompts;
+  $("#ck-prompts").innerHTML = P.map((p, i) => `<div class="${i === CK.cur ? "cur" : ""}"><span class="grow">${esc(p.ref)} <span class="dim">${esc(p.where || p.corner || "")}</span></span>${CK.pts[p.ref] ? `<span class="ok">✓</span>` : ""}</div>`).join("");
+  drawCkMarks();
+}
+function drawCkMarks() {
+  const svg = $("#ck-marks"), img = $("#ck-photo");
+  if (img.hidden || !img.naturalWidth || !CK.anchors || !CK.st.check || CK.st.check.sides[CK.side].aligned) { svg.innerHTML = ""; return; }
+  svg.setAttribute("viewBox", `0 0 ${img.naturalWidth} ${img.naturalHeight}`);
+  const r = img.naturalWidth / 120;
+  svg.innerHTML = Object.entries(CK.pts).map(([ref, [x, y]]) => `<circle class="pt" cx="${x}" cy="${y}" r="${r}" style="stroke-width:${r / 4}"/><text x="${x + r * 1.3}" y="${y - r * 1.3}" style="font-size:${r * 2}px">${esc(ref)}</text>`).join("");
+}
+$("#ck-photo").addEventListener("load", drawCkMarks);
+$("#ck-photo").addEventListener("click", async e => {
+  const c = CK.st && CK.st.check; if (!c || c.sides[CK.side].aligned || !CK.anchors || !CK.anchors.prompts.length) return;
+  const img = e.target, b = img.getBoundingClientRect(), k = img.naturalWidth / b.width;
+  const xy = [(e.clientX - b.left) * k, (e.clientY - b.top) * k];
+  const p = CK.anchors.prompts[CK.cur]; if (!p) return;
+  try { const r = await post(`/api/check/side/${CK.side}/snap`, { xy }); CK.pts[p.ref] = r.xy; } catch (err) { CK.pts[p.ref] = xy; }
+  CK.cur = Math.min(CK.cur + 1, CK.anchors.prompts.length - 1);
+  if (Object.keys(CK.pts).length === CK.anchors.prompts.length) CK.cur = CK.anchors.prompts.length;
+  renderCkPrompts();
+});
+$("#ck-clear").addEventListener("click", () => { CK.pts = {}; CK.cur = 0; renderCkPrompts(); });
+$("#ck-align").addEventListener("click", () => ckAct(() => post(`/api/check/side/${CK.side}/align`, { points: CK.pts }), "Lined up. Look at each flagged part."));
+$("#ck-sides").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.side = b.dataset.side; CK.view = "result"; renderCheck(); } });
+$("#ck-view").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.view = b.dataset.v; renderCkViewer(); } });
+$("#ck-flagged").addEventListener("click", e => {
+  const b = e.target.closest("[data-ans]"); if (!b) return;
+  const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === b.dataset.ref);
+  const ans = cur && cur.answer === b.dataset.ans ? null : b.dataset.ans;
+  ckAct(() => post(`/api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans }));
+});
+$("#ck-go").addEventListener("click", () => ckAct(() => post("/api/check/start", { reference: $("#ck-ref").value, serial: $("#ck-serial").value, notes: $("#ck-notes").value }),
+  "Check started. Take a photo of the board, lined up with the ghost.").then(() => { CK.side = Object.keys(CK.st.check ? CK.st.check.sides : { front: 1 })[0]; $("#ck-serial").value = ""; $("#ck-notes").value = ""; renderCheck(); }));
+$("#ck-new").addEventListener("click", () => { stopCk(); ckAct(() => post("/api/check/close", {})); });
+$("#ck-ghost-on").addEventListener("change", e => { CK.ghostOn = e.target.checked; renderCkViewer(); });
+async function startCk() {
+  try {
+    let want = null; try { want = localStorage.getItem("aoimap-ck-camera"); } catch (e) { }
+    CK.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: want ? { ideal: want } : undefined, width: { ideal: 4096 }, height: { ideal: 3072 } }, audio: false });
+    $("#ck-video").srcObject = CK.stream;
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+    const now = CK.stream.getVideoTracks()[0].getSettings().deviceId;
+    $("#ck-cam-list").innerHTML = devs.map((d, i) => `<option value="${d.deviceId}" ${d.deviceId === now ? "selected" : ""}>${esc(d.label || "Camera " + (i + 1))}</option>`).join("");
+    say("Line the board up with the ghost, then take the photo.");
+  } catch (e) {
+    CK.stream = null;
+    say(location.hostname === "localhost" || location.hostname === "127.0.0.1" ? `The camera couldn't start: ${e.message}` : "The camera only works when this page is opened at http://localhost.", true);
+  }
+  renderCkViewer();
+}
+$("#ck-cam-start").addEventListener("click", () => { if (CK.stream) { stopCk(); renderCkViewer(); } else startCk(); });
+$("#ck-cam-list").addEventListener("change", e => { try { localStorage.setItem("aoimap-ck-camera", e.target.value); } catch (x) { } stopCk(); startCk(); });
+function sendCk(blob) {
+  say("Lining up and checking every part...");
+  CK.view = "result"; CK.anchors = null;
+  ckAct(() => upload(`/api/check/side/${CK.side}/photo`, blob)).then(() => {
+    const s = CK.st.check && CK.st.check.sides[CK.side];
+    if (s && s.aligned) say(s.message); else if (s) say(s.message + " Click the fiducials listed, in order.", true);
+  });
+}
+$("#ck-cam-take").addEventListener("click", () => {
+  const v = $("#ck-video"), c = document.createElement("canvas");
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext("2d").drawImage(v, 0, 0);
+  c.toBlob(b => { stopCk(); sendCk(b); }, "image/jpeg", 0.95);
+});
+$("#ck-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) sendCk(f); });
 
 // ---- start --------------------------------------------------------------------------------
 act(() => api("/api/state")).then(() => { if (S && S.design) say(""); });

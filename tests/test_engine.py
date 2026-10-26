@@ -255,6 +255,78 @@ def test_old_board_folders_become_projects():
     assert b2.design["parts"]
 
 
+def reference_board():
+    b = new_board()
+    Hm = fx.camera("front")
+    b.set_photo("front", cv2.imencode(".png", fx.render("front", Hm))[1].tobytes())
+    b.align("front", click(Hm, b.design, ["FIDT1", "FIDT2", "FIDT3", "FIDT4"], "front"))
+    b.set_reference(b.project["uid"])
+    return b
+
+
+def test_check_another_board_finds_reversed_parts():
+    from aoimap.check import Checks, load, references
+    b = reference_board()
+    refs = references(b.data)
+    assert [r["uid"] for r in refs] == [b.project["uid"]] and "front" in refs[0]["sides"]
+    c = Checks(b.data)
+    c.start(b.project["uid"], "SN-9")
+    # another board, photographed a little differently, with C3 and C7 the wrong way round
+    H2 = fx.camera("front", tilt_deg=-3, ppi=280)
+    c.photo("front", cv2.imencode(".png", fx.render("front", H2, reversed_refs=("C3", "C7")))[1].tobytes())
+    st = c.cur["sides"]["front"]
+    assert st["aligned"], st["message"]
+    res = {r["ref"]: r for r in st["results"]}
+    assert res["C3"]["status"] == "reversed" and res["C7"]["status"] == "reversed", res
+    # D8 is drawn with no mark, so it can't be told either way and is left to the eye
+    assert res["D8"]["status"] == "check" and "no mark" in res["D8"]["why"]
+    for ok in ("C1", "C5", "C8", "U1", "U3"):
+        assert res[ok]["status"] == "ok", (ok, res[ok])
+    assert {s["ref"] for s in st["skipped"]} >= {"D1", "D2", "D3"}
+    assert c.cur["result"] == "OPEN"
+    flagged = [r["ref"] for r in st["results"] if r["status"] != "ok"]
+    for ref in flagged:
+        c.answer("front", ref, "wrong" if ref in ("C3", "C7") else "correct")
+    saved = load(b.data, c.cur["uid"])
+    assert saved["result"] == "FAIL" and saved["serial"] == "SN-9"
+    assert c.crop(c.cur["uid"], "front", "C3", "board")[:2] == b"\xff\xd8"
+    # the same board with everything right passes once the flagged parts are looked at
+    c.start(b.project["uid"], "SN-10")
+    c.photo("front", cv2.imencode(".png", fx.render("front", H2))[1].tobytes())
+    st = c.cur["sides"]["front"]
+    assert not [r for r in st["results"] if r["status"] in ("reversed", "rotated")], st["results"]
+    for r in st["results"]:
+        if r["status"] != "ok":
+            c.answer("front", r["ref"], "correct")
+    assert c.cur["result"] == "PASS"
+
+
+def test_check_lined_up_from_clicked_fiducials():
+    import numpy as np
+    from aoimap.check import Checks
+    b = reference_board()
+    c = Checks(b.data)
+    c.start(b.project["uid"])
+    H2 = fx.camera("front", tilt_deg=4, ppi=260)
+    img = fx.render("front", H2, reversed_refs=("C3",))
+    blank = img.copy()
+    for r in ("FIDT1", "FIDT2", "FIDT3", "FIDT4"):   # paint the fiducials over, so neither automatic way works
+        f = b.design["fiducials"][r]
+        x, y = fx.to_px(H2, [[f["x"], f["y"]]])[0]
+        cv2.circle(blank, (int(x), int(y)), 9, (40, 110, 30), -1)
+    c.photo("front", cv2.imencode(".png", blank)[1].tobytes())
+    st = c.cur["sides"]["front"]
+    a = c.anchors("front")
+    assert not st["aligned"] and st["need_points"] and len(a["prompts"]) == 4, st["message"]
+    pts = {}
+    for p in a["prompts"]:
+        f = b.design["fiducials"][p["ref"]]
+        pts[p["ref"]] = [float(v) for v in fx.to_px(H2, [[f["x"], f["y"]]])[0]]
+    c.align_points("front", pts)
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["C3"]["status"] == "reversed" and res["C1"]["status"] == "ok", res
+
+
 def test_database_history():
     """Needs a MariaDB login: AOIMAP_TEST_DB=path/to/option-file (a throwaway database)."""
     import os
@@ -297,6 +369,21 @@ def test_database_history():
     h3 = dblib.History(b.data, b.data / "no-such.cnf")
     r3 = h3.search("DBTEST")
     assert r3["source"] == "folders" and r3["projects"][0]["serial"] == "DBTEST-7"
+    # checks of other boards
+    from aoimap.check import Checks
+    b.set_reference(first)
+    ch = Checks(b.data)
+    ch.on_change = h.changed_check
+    ch.start(first, "DBCHK-1")
+    ch.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-2), reversed_refs=("C3",)))[1].tobytes())
+    ch.answer("front", "C3", "wrong")
+    r = h.search_checks("DBCHK-1")
+    assert r["source"] == "database" and r["checks"][0]["result"] == "FAIL" and r["checks"][0]["front"]["wrong"] == ["C3"], r
+    n = h._run(lambda c: (c.execute("SELECT COUNT(*) AS n FROM aoi_check_parts p JOIN aoi_checks k ON k.id=p.check_id WHERE k.uid=%s AND p.answer='wrong'", (ch.cur["uid"],)), c.fetchone()["n"])[1])
+    assert n == 1
+    assert h3.search_checks("DBCHK")["checks"][0]["result"] == "FAIL"
+    h._run(lambda c: c.execute("DELETE FROM aoi_checks WHERE uid=%s", (ch.cur["uid"],)))
+    h._run(lambda c: c.execute("DELETE FROM aoi_projects WHERE uid=%s", (first,)))
 
 
 if __name__ == "__main__":

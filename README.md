@@ -74,6 +74,37 @@ Every choice made in the Parts tab is kept in a **board profile**, along with th
 the orientation of each side, the camera, the size limit and the rotation direction. The profile
 is saved per board name, and is reused automatically the next time the same ODB++ is loaded.
 
+## Checking other boards of the same type
+
+Once a board has been mapped and checked by hand, it can be the **reference** for its type: press
+**Use as the reference for checks** on the Map tab (or on the project in History). Then, on the
+**Check a board** tab, pick the board type, give the board a serial and notes, and take or choose a
+photo of each side, lined up with the ghost of the reference.
+
+This is a quick look before work starts on a board (say, before a repair), not a production test.
+
+- The photo is lined up with the reference automatically: by matching features, or else by the
+  corner fiducials. If neither works it asks you to click the fiducials.
+- Every part the reference photo could check is compared with the same part on the reference: what
+  changes when the part is turned round (a band, a + or a pin 1 dot) is compared with the
+  reference's. Square ICs are also tried a quarter turn out.
+- Parts are outlined green (right way round), red (looks reversed or turned) or orange (look at
+  it: no mark shows on the reference, the mark can't be made out, or the part doesn't look like the
+  reference). Each flagged part is shown beside the reference; answer **Right way round** or
+  **Wrong**.
+- The result is **FAIL** if any part is answered wrong, **PASS** once every flagged part is
+  answered on at least one side, and **OPEN** until then. Parts the reference needed a closeup
+  for, or that were too small or hidden, are listed to look at by eye.
+
+Each check is kept in `<data>/checks/<date>-<time>-<board>/` (`check.json`, and for each side
+`photo.jpg`, `aligned.jpg` and `result.jpg`), and in the database tables `aoi_checks` and
+`aoi_check_parts`. The History tab lists checks under **Checks**.
+
+The limits (`MIN_MATCH`, `MARK_MIN`, `MARK_STRENGTH` at the top of `aoimap/check.py`) were set on
+made-up boards, and the method comes from the PTC station's orientation check. Try it on a few
+real boards with known answers before trusting it, and take the reference and the boards under the
+same light.
+
 ## History
 
 Each board mapped is a **project**, kept in its own folder, so mapping the next board never
@@ -113,6 +144,8 @@ The app makes its tables itself:
 | `aoi_project_files` | Every file in the project folder: path, kind (odb, bom, photo, map, closeup, csv, design...), side, size, time |
 | `aoi_project_log` | What was done and when |
 | `aoi_project_parts` | Every placed part of each side: kind, value, checkable, closeup, why not, size in pixels |
+| `aoi_checks` | One row per check of another board: board, reference project, serial, notes, result, parts checked and flagged, parts answered wrong, log |
+| `aoi_check_parts` | Every part compared in a check: status, why, scores, and the answer given |
 
 Photos and files stay in the project folders; the database records where they are.
 

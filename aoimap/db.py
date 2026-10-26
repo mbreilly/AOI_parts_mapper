@@ -21,6 +21,7 @@ import time
 import traceback
 from pathlib import Path
 
+from . import check as ck
 from . import projects as pj
 
 try:
@@ -85,6 +86,38 @@ SCHEMA = [
         PRIMARY KEY (project_id, side, ref),
         KEY ref (ref),
         FOREIGN KEY (project_id) REFERENCES aoi_projects (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS aoi_checks (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        uid VARCHAR(80) NOT NULL UNIQUE,
+        board VARCHAR(128) NOT NULL,
+        reference_uid VARCHAR(80) NOT NULL,
+        serial VARCHAR(128) NOT NULL DEFAULT '',
+        notes TEXT,
+        station VARCHAR(64) NOT NULL DEFAULT '',
+        result VARCHAR(8) NOT NULL,
+        front_checked INT NOT NULL DEFAULT 0, front_flagged INT NOT NULL DEFAULT 0,
+        back_checked INT NOT NULL DEFAULT 0, back_flagged INT NOT NULL DEFAULT 0,
+        wrong_parts TEXT,
+        log TEXT,
+        folder VARCHAR(512) NOT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        KEY board (board), KEY serial (serial), KEY updated_at (updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS aoi_check_parts (
+        check_id INT UNSIGNED NOT NULL,
+        side VARCHAR(8) NOT NULL,
+        ref VARCHAR(64) NOT NULL,
+        kind VARCHAR(16) NOT NULL DEFAULT '',
+        value VARCHAR(255) NOT NULL DEFAULT '',
+        status VARCHAR(10) NOT NULL,
+        answer VARCHAR(10) NULL,
+        why VARCHAR(255) NOT NULL DEFAULT '',
+        score FLOAT NULL, turned FLOAT NULL, mark FLOAT NULL,
+        PRIMARY KEY (check_id, side, ref),
+        KEY ref (ref),
+        FOREIGN KEY (check_id) REFERENCES aoi_checks (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
 ]
 
@@ -201,21 +234,111 @@ class History:
         for u in due:
             self.write(u)
 
+    def changed_check(self, uid: str):
+        self.changed("check:" + uid)
+
     def catch_up(self):
-        """Writes every project folder the database doesn't have, or has an older copy of."""
-        known = self._run(lambda c: (c.execute("SELECT uid, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS u FROM aoi_projects"),
-                                     {r["uid"]: r["u"] for r in c.fetchall()})[1])
-        if known is None:
-            return
-        for uid in pj.uids(self.data):
+        """Writes every project and check folder the database doesn't have, or has an older copy of."""
+        for table, ids, load, key in (("aoi_projects", pj.uids, pj.load, ""), ("aoi_checks", ck.uids, ck.load, "check:")):
+            known = self._run(lambda c: (c.execute(f"SELECT uid, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS u FROM {table}"),
+                                         {r["uid"]: r["u"] for r in c.fetchall()})[1])
+            if known is None:
+                return
+            for uid in ids(self.data):
+                try:
+                    p = load(self.data, uid)
+                except ValueError:
+                    continue
+                if known.get(uid) != p.get("updated"):
+                    self.write(key + uid)
+
+    def write_check(self, uid: str):
+        try:
+            c = ck.load(self.data, uid)
+        except (ValueError, OSError):
+            traceback.print_exc()
+            return False
+        r = ck.row(c)
+        folder = str(ck.folder(self.data, uid).resolve())
+        wrong = ", ".join(f"{s} {ref}" for s in pj.SIDES for ref in r[s]["wrong"])
+        log = "\n".join(f"{e['at']}  {e['what']}" for e in c.get("log", []))
+
+        def go(cur):
+            cur.execute("""INSERT INTO aoi_checks (board, reference_uid, serial, notes, station, result, front_checked, front_flagged,
+                             back_checked, back_flagged, wrong_parts, log, folder, created_at, updated_at, uid)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE board=VALUES(board), reference_uid=VALUES(reference_uid), serial=VALUES(serial),
+                             notes=VALUES(notes), station=VALUES(station), result=VALUES(result),
+                             front_checked=VALUES(front_checked), front_flagged=VALUES(front_flagged),
+                             back_checked=VALUES(back_checked), back_flagged=VALUES(back_flagged), wrong_parts=VALUES(wrong_parts),
+                             log=VALUES(log), folder=VALUES(folder), created_at=VALUES(created_at), updated_at=VALUES(updated_at)""",
+                        (c["board"], c["reference"], c.get("serial", ""), c.get("notes", ""), c.get("station", ""), c["result"],
+                         r["front"]["checked"], r["front"]["flagged"], r["back"]["checked"], r["back"]["flagged"], wrong, log,
+                         folder, c["created"], c["updated"], uid))
+            cur.execute("SELECT id FROM aoi_checks WHERE uid=%s", (uid,))
+            cid = cur.fetchone()["id"]
+            cur.execute("DELETE FROM aoi_check_parts WHERE check_id=%s", (cid,))
+            rows = [(cid, side, p["ref"][:64], p["kind"] or "", (p.get("value") or "")[:255], p["status"], p.get("answer"),
+                     (p.get("why") or "")[:255], p.get("score"), p.get("turned"), p.get("mark"))
+                    for side, st in c["sides"].items() for p in st.get("results", [])]
+            if rows:
+                cur.executemany("""INSERT INTO aoi_check_parts (check_id, side, ref, kind, value, status, answer, why, score, turned, mark)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", rows)
+            return True
+        return self._run(go)
+
+    def search_checks(self, q: str = "", limit: int = 50) -> dict:
+        limit = max(1, min(500, int(limit)))
+        if self.ok:
+            self.flush()
+        cols = ("uid, board, reference_uid, serial, notes, station, result, front_checked, front_flagged, back_checked, "
+                "back_flagged, wrong_parts, DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS created, "
+                "DATE_FORMAT(updated_at, '%%Y-%%m-%%d %%H:%%i:%%s') AS updated")
+
+        def go(c):
+            if q.strip():
+                pat = like(q)
+                c.execute(f"""SELECT {cols} FROM aoi_checks WHERE board LIKE %s OR serial LIKE %s OR notes LIKE %s
+                              OR result LIKE %s OR uid LIKE %s OR wrong_parts LIKE %s ORDER BY updated_at DESC LIMIT %s""",
+                          (pat,) * 6 + (limit,))
+            else:
+                c.execute(f"SELECT {cols} FROM aoi_checks ORDER BY updated_at DESC LIMIT %s", (limit,))
+            rows = c.fetchall()
+            c.execute("SELECT COUNT(*) AS n FROM aoi_checks")
+            return rows, c.fetchone()["n"]
+        got = self._run(go)
+        if got is not None:
+            rows, total = got
+            out = []
+            for r in rows:
+                wrong = [w for w in (r["wrong_parts"] or "").split(", ") if w]
+                d = {k: r[k] for k in ("uid", "board", "serial", "station", "created", "updated", "result")}
+                d.update(reference=r["reference_uid"], notes=r["notes"] or "")
+                for side in pj.SIDES:
+                    d[side] = {"aligned": r[f"{side}_checked"] > 0, "checked": r[f"{side}_checked"], "flagged": r[f"{side}_flagged"],
+                               "wrong": [w.split(" ", 1)[1] for w in wrong if w.startswith(side + " ")]}
+                out.append(d)
+            return {"source": "database", "status": self.status, "ok": True, "checks": out, "total": total}
+        import fnmatch
+        pat = q.strip().lower()
+        if pat and "*" not in pat and "?" not in pat:
+            pat = f"*{pat}*"
+        rows = []
+        for uid in ck.uids(self.data):
             try:
-                p = pj.load(self.data, uid)
+                c = ck.load(self.data, uid)
             except ValueError:
                 continue
-            if known.get(uid) != p.get("updated"):
-                self.write(uid)
+            hay = [c.get(k) or "" for k in ("board", "serial", "notes", "result", "uid")]
+            if pat and not any(fnmatch.fnmatch(h.lower(), pat) for h in hay):
+                continue
+            rows.append(ck.row(c))
+        rows.sort(key=lambda r: r["updated"], reverse=True)
+        return {"source": "folders", "status": self.status, "ok": False, "checks": rows[:limit], "total": len(ck.uids(self.data))}
 
     def write(self, uid: str):
+        if uid.startswith("check:"):
+            return self.write_check(uid[6:])
         try:
             p = pj.load(self.data, uid)
             s = pj.summary(self.data, uid)
