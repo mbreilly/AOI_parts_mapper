@@ -287,7 +287,8 @@ function renderSide(side) {
   // viewer
   const hasPhoto = cu ? !!cst : st.photo;
   const live = !!ui.stream;
-  $("#video").hidden = !live;
+  $("#video").hidden = !live || ui.stream.canon;
+  $("#live").hidden = !live || !ui.stream.canon;
   const img = $("#photo"), ghost = $("#ghost");
   img.hidden = live || !hasPhoto;
   $("#placeholder").hidden = live || hasPhoto;
@@ -363,7 +364,7 @@ function renderSide(side) {
 }
 function applyZoom() {
   const z = ui.zoom / 100;
-  for (const el of [$("#photo"), $("#video")]) el.style.width = (100 * z) + "%";
+  for (const el of [$("#photo"), $("#video"), $("#live")]) el.style.width = (100 * z) + "%";
   $("#ghost").style.width = (100 * z) + "%";
   $("#marks").style.width = (100 * z) + "%";
 }
@@ -460,29 +461,72 @@ $("#side-parts").addEventListener("click", e => { const tr = e.target.closest("t
   ui.highlight = ui.highlight === tr.dataset.ref ? null : tr.dataset.ref; renderSide(tab); });
 
 // ---- the camera ------------------------------------------------------------------------------
+// A webcam (in the browser), or a Canon EOS on USB driven by the server with gphoto2: its live view
+// is shown as a stream of frames in an <img>, and the photo is taken at full resolution by the camera.
+const CANON = "canon";
+async function openCamera(want, video, liveImg, list) {
+  let canon = { available: false };
+  try { canon = await api("/api/canon"); } catch (e) { /* older server */ }
+  let cam;
+  // the Canon unless a webcam was chosen
+  if (canon.available && (want === CANON || !want || !navigator.mediaDevices)) {
+    cam = canonStream(liveImg);
+  } else {
+    if (!navigator.mediaDevices) throw new Error(canon.available ? "choose the Canon from the list" : "the browser has no camera access here");
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: want && want !== CANON ? { ideal: want } : undefined, width: { ideal: 4096 }, height: { ideal: 3072 } }, audio: false });
+    video.srcObject = stream;
+    cam = { canon: false, stream, deviceId: stream.getVideoTracks()[0].getSettings().deviceId, stop: () => stream.getTracks().forEach(t => t.stop()) };
+  }
+  let devs = [];
+  try { devs = navigator.mediaDevices ? (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput" && d.deviceId) : []; } catch (e) { }
+  const opts = devs.map((d, i) => `<option value="${esc(d.deviceId)}" ${!cam.canon && d.deviceId === cam.deviceId ? "selected" : ""}>${esc(d.label || "Camera " + (i + 1))}</option>`);
+  if (canon.available) opts.unshift(`<option value="${CANON}" ${cam.canon ? "selected" : ""}>${esc(canon.name || "Canon EOS")} (USB, full resolution)</option>`);
+  list.innerHTML = opts.join("");
+  video.hidden = cam.canon; liveImg.hidden = !cam.canon;
+  return cam;
+}
+function canonStream(img) {
+  const cam = { canon: true, deviceId: CANON, on: true, stop() { cam.on = false; img.removeAttribute("src"); } };
+  const next = () => {
+    if (!cam.on) return;
+    img.onload = () => setTimeout(next, 150);       // about 5 frames a second keeps the Pi's CPU low
+    img.onerror = async () => {
+      if (!cam.on) return;
+      try { await api("/api/canon/preview.jpg"); } catch (e) { say(`Canon live view: ${e.message}`, true); }
+      setTimeout(next, 2000);
+    };
+    img.src = `/api/canon/preview.jpg?t=${Date.now()}`;
+  };
+  next();
+  return cam;
+}
+async function grab(cam, video) {
+  if (cam.canon) {
+    say("Taking the photo on the Canon...");
+    const r = await fetch("/api/canon/capture", { method: "POST" });
+    if (!r.ok) { let m = `Error ${r.status}`; try { m = (await r.json()).error || m; } catch (e) { } throw new Error(m); }
+    return await r.blob();
+  }
+  const c = document.createElement("canvas");
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext("2d").drawImage(video, 0, 0);
+  return await new Promise(res => c.toBlob(res, "image/jpeg", 0.95));
+}
+const camFailed = e => say(location.hostname === "localhost" || location.hostname === "127.0.0.1" || e.message.includes("Canon")
+  ? `The camera couldn't start: ${e.message}` : "The webcam only works when this page is opened at http://localhost. A Canon on USB works from anywhere.", true);
+
 async function startCamera() {
   try {
-    const want = S.profile.camera;
-    ui.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: want ? { ideal: want } : undefined, width: { ideal: 4096 }, height: { ideal: 3072 } }, audio: false });
-    $("#video").srcObject = ui.stream;
-    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
-    const now = ui.stream.getVideoTracks()[0].getSettings().deviceId;
-    $("#cam-list").innerHTML = devs.map((d, i) => `<option value="${d.deviceId}" ${d.deviceId === now ? "selected" : ""}>${esc(d.label || "Camera " + (i + 1))}</option>`).join("");
+    ui.stream = await openCamera(S.profile.camera, $("#video"), $("#live"), $("#cam-list"));
     say("Line the board up with the ghost, then take the photo.");
-  } catch (e) {
-    ui.stream = null;
-    say(location.hostname === "localhost" || location.hostname === "127.0.0.1" ? `The camera couldn't start: ${e.message}` : "The camera only works when this page is opened at http://localhost.", true);
-  }
+  } catch (e) { ui.stream = null; camFailed(e); }
   renderSide(tab);
 }
-function stopCamera() { if (ui.stream) { ui.stream.getTracks().forEach(t => t.stop()); ui.stream = null; } }
+function stopCamera() { if (ui.stream) { ui.stream.stop(); ui.stream = null; } $("#live").hidden = true; }
 $("#cam-start").addEventListener("click", () => { if (ui.stream) { stopCamera(); renderSide(tab); } else startCamera(); });
 $("#cam-list").addEventListener("change", e => { stopCamera(); post("/api/option", { key: "camera", value: e.target.value }).then(s => { S = s; startCamera(); }); });
-$("#cam-take").addEventListener("click", () => {
-  const v = $("#video"), c = document.createElement("canvas");
-  c.width = v.videoWidth; c.height = v.videoHeight;
-  c.getContext("2d").drawImage(v, 0, 0);
-  c.toBlob(b => { stopCamera(); sendPhoto(b); }, "image/jpeg", 0.95);
+$("#cam-take").addEventListener("click", async () => {
+  try { const b = await grab(ui.stream, $("#video")); stopCamera(); sendPhoto(b); } catch (e) { say(e.message, true); }
 });
 $("#photo-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) sendPhoto(f); });
 function sendPhoto(blob) {
@@ -700,7 +744,7 @@ function ckAct(fn, done) {
     renderCheck();
   })();
 }
-function stopCk() { if (CK.stream) { CK.stream.getTracks().forEach(t => t.stop()); CK.stream = null; } }
+function stopCk() { if (CK.stream) { CK.stream.stop(); CK.stream = null; } $("#ck-live").hidden = true; }
 
 function renderCheck() {
   const st = CK.st; if (!st) return;
@@ -737,7 +781,8 @@ function renderCheck() {
 function renderCkViewer() {
   const c = CK.st && CK.st.check, s = c ? (c.sides[CK.side] || {}) : {};
   const live = !!CK.stream;
-  $("#ck-video").hidden = !live;
+  $("#ck-video").hidden = !live || CK.stream.canon;
+  $("#ck-live").hidden = !live || !CK.stream.canon;
   $("#ck-cam-start").textContent = live ? "STOP CAMERA" : "START CAMERA";
   $("#ck-cam-take").hidden = !live; $("#ck-cam-list").hidden = !live;
   $("#ck-cam-row").style.visibility = c ? "visible" : "hidden";
@@ -808,18 +853,11 @@ $("#ck-go").addEventListener("click", () => ckAct(() => post("/api/check/start",
 $("#ck-new").addEventListener("click", () => { stopCk(); ckAct(() => post("/api/check/close", {})); });
 $("#ck-ghost-on").addEventListener("change", e => { CK.ghostOn = e.target.checked; renderCkViewer(); });
 async function startCk() {
+  let want = null; try { want = localStorage.getItem("aoimap-ck-camera"); } catch (e) { }
   try {
-    let want = null; try { want = localStorage.getItem("aoimap-ck-camera"); } catch (e) { }
-    CK.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: want ? { ideal: want } : undefined, width: { ideal: 4096 }, height: { ideal: 3072 } }, audio: false });
-    $("#ck-video").srcObject = CK.stream;
-    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
-    const now = CK.stream.getVideoTracks()[0].getSettings().deviceId;
-    $("#ck-cam-list").innerHTML = devs.map((d, i) => `<option value="${d.deviceId}" ${d.deviceId === now ? "selected" : ""}>${esc(d.label || "Camera " + (i + 1))}</option>`).join("");
+    CK.stream = await openCamera(want, $("#ck-video"), $("#ck-live"), $("#ck-cam-list"));
     say("Line the board up with the ghost, then take the photo.");
-  } catch (e) {
-    CK.stream = null;
-    say(location.hostname === "localhost" || location.hostname === "127.0.0.1" ? `The camera couldn't start: ${e.message}` : "The camera only works when this page is opened at http://localhost.", true);
-  }
+  } catch (e) { CK.stream = null; camFailed(e); }
   renderCkViewer();
 }
 $("#ck-cam-start").addEventListener("click", () => { if (CK.stream) { stopCk(); renderCkViewer(); } else startCk(); });
@@ -832,11 +870,8 @@ function sendCk(blob) {
     if (s && s.aligned) say(s.message); else if (s) say(s.message + " Click the fiducials listed, in order.", true);
   });
 }
-$("#ck-cam-take").addEventListener("click", () => {
-  const v = $("#ck-video"), c = document.createElement("canvas");
-  c.width = v.videoWidth; c.height = v.videoHeight;
-  c.getContext("2d").drawImage(v, 0, 0);
-  c.toBlob(b => { stopCk(); sendCk(b); }, "image/jpeg", 0.95);
+$("#ck-cam-take").addEventListener("click", async () => {
+  try { const b = await grab(CK.stream, $("#ck-video")); stopCk(); sendCk(b); } catch (e) { say(e.message, true); }
 });
 $("#ck-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) sendCk(f); });
 

@@ -4,3 +4,5 @@ opencv-python>=4.8
 # openpyxl>=3.1
 # optional: the project history in MariaDB/MySQL (without it, history comes from the project folders)
 pymysql>=1.1
+# optional: a Canon EOS (or other gphoto2 camera) on USB; needs libgphoto2 (apt install gphoto2 libgphoto2-dev)
+gphoto2>=2.5

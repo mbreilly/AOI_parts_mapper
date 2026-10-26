@@ -21,6 +21,20 @@ Needs Python 3.10 or newer.
 That opens `http://localhost:8090` in the browser. The camera only works on a page opened at
 `localhost`, which is why the tool runs as a small local server.
 
+**Cameras.** Photos come from a USB webcam, a photo file, or a **Canon EOS** DSLR (or another camera
+[gphoto2](http://gphoto.org/proj/libgphoto2/support.php) supports) on USB. A Canon that is plugged in
+and switched on is listed first in the camera menu and used unless a webcam was picked: its live
+view shows behind the ghost, and **Take photo** has the camera take the full-resolution photo
+straight from its memory. Setup, once:
+
+    sudo apt install gphoto2 libgphoto2-dev
+    pip install gphoto2
+    python -m aoimap.canon test.jpg     # checks the camera answers
+
+Set the camera to M with the aperture at about f/8, image quality JPEG (L, fine), auto power off
+disabled, and power it from a dummy-battery AC adapter. `CANON_FAKE_IMAGE=photo.jpg` stands in for
+a camera. `aoimap/canon.py` is shared with the PTC QC station.
+
 Options:
 - `--port 8091` changes the port.
 - `--data D:\aoi` changes where boards are kept. The default is `aoimap-data` in your home folder.

@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import cv2
 
+from . import canon as canonlib
 from . import check as ck
 from . import db as dblib
 from . import photo as ph
@@ -94,6 +95,13 @@ def make_handler(app: App):
                     return self._send(200, (STATIC / parts[1]).read_bytes(), ctype, cache=True)
                 if parts[0] != "api":
                     return self._err("Not found", 404)
+                if parts[1:] == ["canon"]:
+                    return self._json(canonlib.shared().detect())
+                if parts[1:] == ["canon", "preview.jpg"]:
+                    try:
+                        return self._send(200, canonlib.shared().preview(), "image/jpeg")
+                    except canonlib.CameraError as e:
+                        return self._err(str(e), 503)
                 if parts[1:3] == ["history", "checks"]:
                     return self._json(app.history.search_checks(q.get("q", ""), q.get("limit", 50)))
                 if parts[1:2] == ["history"]:
@@ -236,6 +244,11 @@ def make_handler(app: App):
             try:
                 if parts[:1] != ["api"]:
                     return self._err("Not found", 404)
+                if parts[1:] == ["canon", "capture"]:
+                    try:
+                        return self._send(200, canonlib.shared().capture(), "image/jpeg")
+                    except canonlib.CameraError as e:
+                        return self._err(str(e), 503)
                 with app.lock:
                     r = parts[1:]
                     if r == ["upload"]:
