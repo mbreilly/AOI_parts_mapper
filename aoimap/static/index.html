@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AOI Parts Mapper</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="panel">
+  <header>
+    <h1>AOI PARTS MAPPER</h1>
+    <div class="sub" id="sub">ODB++  ·  BOM  ·  photo map</div>
+    <i class="screw tl"></i><i class="screw tr"></i>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="files" class="on">1  FILES</button>
+    <button data-tab="parts">2  PARTS</button>
+    <button data-tab="front">3  FRONT</button>
+    <button data-tab="back">4  BACK</button>
+    <button data-tab="map">5  MAP</button>
+  </nav>
+
+  <div id="msg" class="msg" hidden></div>
+
+  <!-- 1 FILES -->
+  <section id="tab-files" class="tab">
+    <div class="cols">
+      <div class="col">
+        <h2>LOAD THE BOARD</h2>
+        <label class="drop" id="drop-odb">
+          <input type="file" id="file-odb" accept=".tgz,.gz,.tar,.zip">
+          <b>ODB++</b><span>.tgz, .tar or .zip</span><em id="odb-state">Not loaded</em>
+        </label>
+        <label class="drop" id="drop-bom">
+          <input type="file" id="file-bom" accept=".csv,.txt,.xlsx">
+          <b>BOM</b><span>.csv (or .xlsx)</span><em id="bom-state">Not loaded</em>
+        </label>
+        <div id="boards-box">
+          <h3>SAVED BOARDS</h3>
+          <div id="boards" class="list"></div>
+        </div>
+      </div>
+      <div class="col wide" id="design-box" hidden>
+        <h2>THE DESIGN</h2>
+        <div id="design-summary"></div>
+        <div class="row" id="step-row" hidden><span class="lab">ODB++ STEP</span><select id="step"></select></div>
+        <h3>BOM COLUMNS</h3>
+        <p class="dim">Check each field reads the right column. Changes are kept for this board.</p>
+        <div id="columns" class="grid2"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 PARTS -->
+  <section id="tab-parts" class="tab" hidden>
+    <div class="cols">
+      <div class="col wide">
+        <h2>WHICH PARTS ARE POLARISED</h2>
+        <p class="dim">Suggested from the BOM. Change the kind of any line, or mark parts that can't be seen
+          (under a heatsink or shield). Choices are kept for the next board with these part numbers.</p>
+        <div class="row">
+          <div class="seg" id="line-filter">
+            <button data-f="pol" class="on">POLARISED</button><button data-f="all">ALL LINES</button>
+          </div>
+          <input id="line-search" placeholder="Search value or description">
+        </div>
+        <div class="tablewrap"><table id="lines"><thead><tr>
+          <th>Value</th><th>Description</th><th>Parts</th><th>Kind</th><th>Hidden because</th></tr></thead>
+          <tbody></tbody></table></div>
+      </div>
+      <div class="col">
+        <h2>MARKINGS</h2>
+        <p class="dim">Which end of a two-pin part has the band or + sign. Footprint libraries differ, so check one
+          board.</p>
+        <div id="markings"></div>
+        <h2>ROTATION</h2>
+        <p class="dim" id="rot-note"></p>
+        <div class="seg" id="rot-sign">
+          <button data-v="auto">AUTO</button><button data-v="-1">CLOCKWISE</button><button data-v="1">ANTICLOCKWISE</button>
+        </div>
+        <h2>SIZE NEEDED</h2>
+        <p class="dim">A part narrower than this in a photo can't be checked; the app plans closeups for it.</p>
+        <div class="knobrow"><div class="knob" id="knob-minpx" data-min="6" data-max="40" data-step="1"
+             data-unit="px" data-label="MIN PART SIZE"></div></div>
+        <h2>LINING UP</h2>
+        <label class="check"><input type="checkbox" id="use-tant"> Also use tantalum capacitors as anchors (helps with lens
+          bending; off by default)</label>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3/4 FRONT and BACK share one layout -->
+  <section id="tab-side" class="tab" hidden>
+    <div class="cols">
+      <div class="col viewcol">
+        <div class="viewer" id="viewer">
+          <video id="video" autoplay playsinline muted hidden></video>
+          <img id="ghost" class="ghost" alt="" hidden>
+          <img id="photo" alt="" hidden>
+          <svg id="marks" class="marks"></svg>
+          <div id="placeholder" class="placeholder">No photo yet. Start the camera or choose a file.</div>
+        </div>
+        <div class="row" id="cam-row">
+          <button id="cam-start">START CAMERA</button>
+          <select id="cam-list" hidden></select>
+          <button id="cam-take" class="accent" hidden>TAKE PHOTO</button>
+          <label class="btn">CHOOSE FILE<input type="file" id="photo-file" accept="image/*" hidden></label>
+          <span class="sep"></span>
+          <label class="check"><input type="checkbox" id="ghost-on" checked> Ghost</label>
+          <div class="knob small" id="knob-ghost" data-min="0" data-max="100" data-step="5" data-unit="%"
+               data-label="GHOST"></div>
+          <div class="knob small" id="knob-zoom" data-min="100" data-max="400" data-step="25" data-unit="%"
+               data-label="ZOOM"></div>
+        </div>
+      </div>
+      <div class="col sidecol">
+        <h2 id="side-title">FRONT</h2>
+        <div class="row"><span class="lab">HOW THE BOARD LIES</span></div>
+        <div class="seg" id="orient"></div>
+
+        <div id="align-box" hidden>
+          <h3>LINE UP THE PHOTO</h3>
+          <p class="dim" id="align-help">Click each point on the photo, in order. Clicks snap to the pad.</p>
+          <div id="prompts" class="list"></div>
+          <div class="row">
+            <button id="auto-find">FIND THEM</button>
+            <button id="clear-pts">CLEAR</button>
+            <button id="do-align" class="accent">LINE UP</button>
+          </div>
+          <div id="align-result"></div>
+        </div>
+
+        <div id="rot-box" hidden>
+          <h3>ROTATION CHECK</h3>
+          <p class="dim" id="rot-help"></p>
+          <div class="pair" id="rot-crops"></div>
+        </div>
+
+        <div id="closeup-box" hidden>
+          <h3>CLOSEUPS FOR SMALL PARTS</h3>
+          <p class="dim">These parts are too small in the full photo. Take a closer photo of each area, then click the
+            points listed to line it up.</p>
+          <div id="tiles" class="list"></div>
+        </div>
+
+        <div id="parts-box" hidden>
+          <h3>PARTS ON THIS SIDE</h3>
+          <div class="row"><div class="seg" id="parts-filter">
+            <button data-f="all" class="on">ALL</button><button data-f="yes">CHECKABLE</button><button data-f="no">NOT</button>
+          </div><label class="check"><input type="checkbox" id="marks-on" checked> Markings</label></div>
+          <div class="tablewrap short"><table id="side-parts"><thead><tr>
+            <th>Ref</th><th>Kind</th><th>Value</th><th>Pin 1</th><th>Size</th><th>Check</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 MAP -->
+  <section id="tab-map" class="tab" hidden>
+    <div class="cols">
+      <div class="col wide">
+        <h2>THE PARTS MAP</h2>
+        <div id="map-summary"></div>
+        <div class="row">
+          <a class="btn accent" id="dl-csv" href="/api/parts_map.csv">DOWNLOAD CSV</a>
+          <a class="btn" id="dl-json" href="/api/design.json" download="design.json">DESIGN JSON</a>
+        </div>
+        <p class="dim" id="map-folder"></p>
+        <h3>CAN'T BE CHECKED</h3>
+        <div class="tablewrap"><table id="unchecked"><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </section>
+  <i class="screw bl"></i><i class="screw br"></i>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

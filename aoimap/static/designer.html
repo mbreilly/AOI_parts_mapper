@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AOI Mapper Colours</title>
+<style>
+  :root {
+    --panel: #20232C; --panelEdge: #131416; --ink: #E3E3E3; --dimInk: #E3E3E3;
+    --accent: #E0A33A; --knobBody: #1C1B17; --buttonOff: #2E2F23; --screw: #8A8768;
+    --font: -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    --page: #0E0F11; --pageInk: #D8D8D8;
+  }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --page: #EDEDEA; --pageInk: #222; } }
+  :root[data-theme="light"] { --page: #EDEDEA; --pageInk: #222; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--pageInk); font: 14px/1.45 var(--font); }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1.page { font-size: 18px; margin: 0 0 4px; }
+  p.lead { margin: 0 0 16px; opacity: .8; font-size: 13px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+  @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
+
+  /* --- the replica of the app (same tokens and proportions) --- */
+  .app { position: relative; border-radius: 6px; overflow: hidden; color: var(--ink);
+    background: linear-gradient(color-mix(in srgb, var(--panel) 94%, white), color-mix(in srgb, var(--panel) 85%, black)); }
+  .app header { height: 48px; background: var(--panelEdge); border-bottom: 3px solid var(--accent); display: flex; align-items: center;
+    justify-content: space-between; padding: 0 20px; }
+  .app h1 { margin: 0; font-size: 22px; font-weight: 700; }
+  .app .sub { font-size: 12px; color: var(--dimInk); white-space: pre; }
+  .screw { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: var(--screw); }
+  .s1 { left: 10px; top: 54px; } .s2 { right: 10px; top: 54px; } .s3 { left: 10px; bottom: 10px; } .s4 { right: 10px; bottom: 10px; }
+  .app button { font: 700 13px var(--font); color: var(--dimInk); background: var(--buttonOff); border: 1px solid var(--panelEdge);
+    border-radius: 3px; height: 34px; padding: 0 12px; cursor: pointer; }
+  .app button:hover { background: color-mix(in srgb, var(--buttonOff) 75%, white); }
+  .app button:active { border-color: var(--ink); }
+  .app button.on { background: var(--accent); color: var(--panelEdge); }
+  .tabs { display: flex; gap: 6px; padding: 16px 24px 0; flex-wrap: wrap; }
+  .tabs button { min-width: 92px; }
+  .msg { margin: 12px 24px 0; padding: 8px 12px; background: color-mix(in srgb, var(--panelEdge) 60%, transparent); border-left: 3px solid var(--accent); font-size: 13px; }
+  .body { display: flex; padding: 12px 24px 26px; gap: 0; }
+  .view { flex: 3; padding-right: 12px; }
+  .side { flex: 2; padding-left: 12px; border-left: 1px solid var(--panelEdge); min-width: 0; }
+  .viewer { background: var(--panelEdge); border-radius: 4px; }
+  .viewer svg { display: block; width: 100%; height: auto; }
+  h2 { font-size: 12px; font-weight: 700; letter-spacing: .06em; margin: 6px 0 8px; }
+  h3 { font-size: 11px; font-weight: 700; color: var(--dimInk); letter-spacing: .06em; margin: 14px 0 6px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  .list div { display: flex; justify-content: space-between; padding: 6px 8px; border-bottom: 1px solid var(--panelEdge); font-size: 13px; cursor: pointer; }
+  .list div.cur { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .list .ok { color: var(--accent); font-weight: 700; }
+  .list .dim, .dimt { color: var(--dimInk); opacity: .75; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+  th { background: var(--panelEdge); text-align: left; padding: 5px 7px; font-size: 11px; }
+  td { padding: 4px 7px; border-bottom: 1px solid color-mix(in srgb, var(--panelEdge) 70%, transparent); }
+  td.no { color: var(--dimInk); opacity: .7; }
+  .knobs { display: flex; gap: 16px; align-items: flex-end; margin-top: 10px; }
+  .knob { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .knob .kl { font: 700 11px var(--font); }
+  .knob svg { width: 64px; height: 64px; cursor: ns-resize; touch-action: none; }
+  .knob .kv { width: 64px; height: 20px; line-height: 20px; text-align: center; font-size: 12px; background: color-mix(in srgb, var(--panelEdge) 60%, transparent); border-radius: 2px; }
+
+  /* --- the controls --- */
+  .controls { background: color-mix(in srgb, var(--page) 92%, var(--pageInk)); border-radius: 6px; padding: 14px; }
+  .controls h2 { color: var(--pageInk); }
+  .tok { display: grid; grid-template-columns: 34px 1fr 82px; gap: 4px 8px; align-items: center; padding: 6px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--pageInk) 12%, transparent); }
+  .tok input[type=color] { width: 34px; height: 28px; border: 0; padding: 0; background: none; cursor: pointer; }
+  .tok b { font-size: 13px; } .tok small { grid-column: 2 / 4; font-size: 11px; opacity: .7; }
+  .tok input[type=text] { width: 82px; font: 12px ui-monospace, Menlo, monospace; padding: 4px; border: 1px solid color-mix(in srgb, var(--pageInk) 30%, transparent);
+    border-radius: 3px; background: transparent; color: var(--pageInk); }
+  .tok input.bad { border-color: #d33; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
+  .presets button, .copy { font: 600 12px var(--font); padding: 6px 10px; border-radius: 4px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--pageInk) 30%, transparent); background: transparent; color: var(--pageInk); }
+  .copy { margin-top: 8px; width: 100%; }
+  textarea { width: 100%; height: 190px; font: 12px ui-monospace, Menlo, monospace; margin-top: 10px; padding: 8px; resize: vertical;
+    background: transparent; color: var(--pageInk); border: 1px solid color-mix(in srgb, var(--pageInk) 25%, transparent); border-radius: 4px; }
+  label.t { display: block; font-size: 12px; margin-top: 10px; } label.t input { width: 100%; padding: 5px; margin-top: 3px; font: 13px var(--font);
+    background: transparent; color: var(--pageInk); border: 1px solid color-mix(in srgb, var(--pageInk) 30%, transparent); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page">AOI Parts Mapper colours</h1>
+  <p class="lead">A working preview of the mapper's screen. Change a colour and the preview follows. When it looks right,
+    press Copy summary and paste it back to Claude; the values go into the tokens at the top of <code>aoimap/static/app.css</code>.</p>
+  <div class="layout">
+    <div class="app" id="app">
+      <header><h1 id="title">AOI PARTS MAPPER</h1><div class="sub">job  ·  inch  ·  20 polarised parts</div></header>
+      <i class="screw s1"></i><i class="screw s2"></i><i class="screw s3"></i><i class="screw s4"></i>
+      <nav class="tabs" id="tabs"><button>1  FILES</button><button>2  PARTS</button><button class="on">3  FRONT</button><button>4  BACK</button><button>5  MAP</button></nav>
+      <div class="msg">Lined up. Coloured outlines can be checked; grey ones can't (see the list).</div>
+      <div class="body">
+        <div class="view">
+          <div class="viewer"><svg viewBox="0 0 600 420" id="board"></svg></div>
+          <div class="knobs">
+            <div class="row" style="margin:0"><button>START CAMERA</button><button>CHOOSE FILE</button></div>
+            <div class="knob" data-v="35" data-max="100" data-u="%"><span class="kl">GHOST</span><svg viewBox="-50 -50 100 100"></svg><span class="kv"></span></div>
+            <div class="knob" data-v="14" data-max="40" data-u="px"><span class="kl">MIN SIZE</span><svg viewBox="-50 -50 100 100"></svg><span class="kv"></span></div>
+          </div>
+        </div>
+        <div class="side">
+          <h2>FRONT</h2>
+          <div class="row seg"><button class="on">TOP EDGE UP</button><button>TURNED 180°</button></div>
+          <h3>LINE UP THE PHOTO</h3>
+          <div class="list" id="prompts">
+            <div><span><b>FIDT1</b> <span class="dim">top-left</span></span><span class="ok">✓</span></div>
+            <div><span><b>FIDT2</b> <span class="dim">top-right</span></span><span class="ok">✓</span></div>
+            <div class="cur"><span><b>FIDT4</b> <span class="dim">bottom-right</span></span><span class="dim">click it</span></div>
+            <div><span><b>FIDT3</b> <span class="dim">bottom-left</span></span><span class="dim">—</span></div>
+          </div>
+          <div class="row"><button>FIND THEM</button><button>CLEAR</button><button class="on">LINE UP</button></div>
+          <h3>PARTS ON THIS SIDE</h3>
+          <table><tr><th>Ref</th><th>Kind</th><th>Pin 1</th><th>Check</th></tr>
+            <tr><td>U1</td><td>IC</td><td>NW</td><td>yes</td></tr><tr><td>C3</td><td>Tantalum</td><td>E</td><td>yes</td></tr>
+            <tr><td>D1</td><td>LED</td><td>W</td><td class="no">too small: 9 px</td></tr></table>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <h2>PRESETS</h2>
+      <div class="presets" id="presets"></div>
+      <h2>COLOURS</h2>
+      <div id="tokens"></div>
+      <label class="t">Title <input id="title-in" value="AOI PARTS MAPPER"></label>
+      <textarea id="summary" readonly></textarea>
+      <button class="copy" id="copy">Copy summary</button>
+    </div>
+  </div>
+</div>
+<script>
+"use strict";
+const TOKENS = [
+  ["panel", "Panel", "Main background (shaded top to bottom)"],
+  ["panelEdge", "Header & boxes", "Title bar, value boxes, outlines, dividers, photo frame"],
+  ["ink", "Text", "Title, labels, values, knob pointers, selected button text"],
+  ["dimInk", "Dim text", "Subtitle, section labels, hints, idle button text, ticks"],
+  ["accent", "Accent", "Header stripe, selected buttons, knob arcs, current row"],
+  ["knobBody", "Knobs", "Knob skirt and cap"],
+  ["buttonOff", "Buttons", "Unselected buttons"],
+  ["screw", "Screws", "Corner screws, drop-zone borders"],
+];
+const PRESETS = {
+  "Current app": { panel: "#20232C", panelEdge: "#131416", ink: "#E3E3E3", dimInk: "#E3E3E3", accent: "#E0A33A", knobBody: "#1C1B17", buttonOff: "#2E2F23", screw: "#8A8768" },
+  "Black hardware": { panel: "#1B1B1C", panelEdge: "#0B0B0C", ink: "#F2F2EE", dimInk: "#8E8E8A", accent: "#E8492E", knobBody: "#0A0A0A", buttonOff: "#151516", screw: "#7A7C80" },
+  "Army olive": { panel: "#4A4C37", panelEdge: "#23241A", ink: "#EEE8CF", dimInk: "#A9A483", accent: "#E0A33A", knobBody: "#1A1A15", buttonOff: "#2E2F23", screw: "#8A8768" },
+  "Steel blue": { panel: "#38424C", panelEdge: "#161B21", ink: "#E6ECF1", dimInk: "#8C9AA6", accent: "#F07B2C", knobBody: "#12161A", buttonOff: "#202830", screw: "#76838F" },
+  "Bone & ink": { panel: "#5B5750", panelEdge: "#1E1C19", ink: "#F4EEDF", dimInk: "#B4AC98", accent: "#C8352A", knobBody: "#191816", buttonOff: "#3A3732", screw: "#9A9282" },
+};
+const KEY = "aoimap-colours";
+let cur = { ...PRESETS["Current app"] }, title = "AOI PARTS MAPPER";
+try { const s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s) { cur = { ...cur, ...s.colours }; title = s.title || title; } } catch (e) { }
+const app = document.getElementById("app");
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ colours: cur, title })); } catch (e) { } };
+
+function apply() {
+  for (const [k] of TOKENS) app.style.setProperty("--" + k, cur[k]);
+  document.getElementById("title").textContent = title;
+  drawKnobs(); drawBoard(); summary(); save();
+}
+function summary() {
+  const pad = s => (s + ":").padEnd(17);
+  document.getElementById("summary").value = "AOI Parts Mapper UI colors:\n" +
+    TOKENS.map(([k, name]) => `  ${pad(name)}${cur[k].toUpperCase()}   (${k})`).join("\n") + `\n  ${pad("Title")}${title}`;
+}
+function rows() {
+  document.getElementById("tokens").innerHTML = TOKENS.map(([k, name, what]) => `<div class="tok">
+    <input type="color" data-k="${k}" value="${cur[k]}"><b>${name}</b><input type="text" data-hex="${k}" value="${cur[k].toUpperCase()}"><small>${what}</small></div>`).join("");
+}
+document.getElementById("tokens").addEventListener("input", e => {
+  const k = e.target.dataset.k || e.target.dataset.hex;
+  if (!k) return;
+  let v = e.target.value.trim();
+  if (e.target.dataset.hex) {
+    if (!/^#?[0-9a-f]{6}$/i.test(v)) { e.target.classList.add("bad"); return; }
+    e.target.classList.remove("bad");
+    v = v.startsWith("#") ? v : "#" + v;
+    document.querySelector(`[data-k="${k}"]`).value = v.toLowerCase();
+  } else document.querySelector(`[data-hex="${k}"]`).value = v.toUpperCase();
+  cur[k] = v; apply();
+});
+document.getElementById("presets").innerHTML = Object.keys(PRESETS).map(n => `<button data-p="${n}">${n}</button>`).join("");
+document.getElementById("presets").addEventListener("click", e => { const p = e.target.dataset.p; if (p) { cur = { ...PRESETS[p] }; rows(); apply(); } });
+document.getElementById("title-in").value = title;
+document.getElementById("title-in").addEventListener("input", e => { title = e.target.value || "AOI PARTS MAPPER"; apply(); });
+document.getElementById("copy").addEventListener("click", async () => {
+  const t = document.getElementById("summary");
+  try { await navigator.clipboard.writeText(t.value); } catch (e) { t.select(); document.execCommand("copy"); }
+  const b = document.getElementById("copy"); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy summary", 1200);
+});
+// clickable replica bits
+document.getElementById("tabs").addEventListener("click", e => { if (e.target.tagName !== "BUTTON") return; document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b === e.target)); });
+document.querySelectorAll(".seg").forEach(s => s.addEventListener("click", e => { if (e.target.tagName === "BUTTON") s.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === e.target)); }));
+document.getElementById("prompts").addEventListener("click", e => { const d = e.target.closest("div"); if (d) document.querySelectorAll("#prompts > div").forEach(x => x.classList.toggle("cur", x === d)); });
+
+function drawKnobs() {
+  document.querySelectorAll(".knob").forEach(el => {
+    const v = +el.dataset.v, max = +el.dataset.max, pos = v / max, a0 = Math.PI * 1.25, a1 = Math.PI * 2.75, a = a0 + pos * (a1 - a0), r = 46;
+    const P = (rr, aa) => [rr * Math.sin(aa), -rr * Math.cos(aa)];
+    let s = "";
+    for (let i = 0; i <= 10; i++) { const t = a0 + i / 10 * (a1 - a0), [x1, y1] = P(r * .92, t), [x2, y2] = P(r * (i % 5 ? .97 : 1), t);
+      s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${cur.dimInk}" stroke-width="${i % 5 ? 1 : 1.6}"/>`; }
+    const [ax, ay] = P(r * .84, a0), [bx, by] = P(r * .84, a);
+    s += `<path d="M${ax} ${ay} A${r * .84} ${r * .84} 0 ${a - a0 > Math.PI ? 1 : 0} 1 ${bx} ${by}" fill="none" stroke="${cur.accent}" stroke-width="2.5" stroke-linecap="round"/>`;
+    const kr = r * .7, cap = kr * .78, id = "g" + Math.random().toString(36).slice(2);
+    s += `<defs><linearGradient id="${id}a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="color-mix(in srgb, ${cur.knobBody} 84%, white)"/><stop offset="1" stop-color="${cur.knobBody}"/></linearGradient>
+      <linearGradient id="${id}b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="color-mix(in srgb, ${cur.knobBody} 90%, white)"/><stop offset="1" stop-color="color-mix(in srgb, ${cur.knobBody} 40%, black)"/></linearGradient></defs>
+      <circle cx="1.5" cy="3" r="${kr}" fill="black" opacity=".5"/><circle r="${kr}" fill="url(#${id}a)"/><circle r="${cap}" fill="url(#${id}b)"/>`;
+    const [p1x, p1y] = P(kr * .25, a), [p2x, p2y] = P(kr * .92, a);
+    s += `<line x1="${p1x}" y1="${p1y}" x2="${p2x}" y2="${p2y}" stroke="${cur.ink}" stroke-width="2.2" stroke-linecap="round"/>`;
+    el.querySelector("svg").innerHTML = s;
+    el.querySelector(".kv").textContent = `${v} ${el.dataset.u}`;
+  });
+}
+document.querySelectorAll(".knob svg").forEach(svg => {
+  let d = null; const el = svg.parentElement;
+  svg.addEventListener("pointerdown", e => { d = { y: e.clientY, v: +el.dataset.v }; svg.setPointerCapture(e.pointerId); });
+  svg.addEventListener("pointermove", e => { if (!d) return; el.dataset.v = Math.max(0, Math.min(+el.dataset.max, Math.round(d.v + (d.y - e.clientY) * +el.dataset.max / 150))); drawKnobs(); });
+  svg.addEventListener("pointerup", () => d = null);
+});
+function drawBoard() {
+  // the photo area: a board with part outlines in the map's fixed kind colours (not tokens)
+  const k = { ic: "#FFA500", tantalum: "#FF00FF", led: "#50E650", diode: "#FF3C3C" };
+  let s = `<rect width="600" height="420" fill="${cur.panelEdge}"/><polygon points="40,40 565,52 556,390 30,378" fill="#286E1E"/>`;
+  const parts = [[120, 110, 40, 40, "ic"], [300, 90, 90, 22, "ic"], [200, 240, 26, 15, "tantalum"], [420, 200, 26, 15, "tantalum"], [150, 320, 15, 26, "tantalum"],
+                 [380, 300, 30, 18, "diode"], [470, 330, 9, 5, "led"], [482, 330, 9, 5, "led"]];
+  for (const [x, y, w, h, kind] of parts) {
+    const small = kind === "led";
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${kind === "ic" ? "#191919" : kind === "tantalum" ? "#E6A51E" : "#3C3C3C"}"/>
+      <rect x="${x - 2}" y="${y - 2}" width="${w + 4}" height="${h + 4}" fill="none" stroke="${small ? "#969696" : k[kind]}" stroke-width="2"/>`;
+    if (!small) s += `<circle cx="${x + 3}" cy="${y + 3}" r="2.5" fill="#FF0000"/>`;
+  }
+  for (const [x, y, n] of [[60, 60, "FIDT1"], [545, 70, "FIDT2"], [538, 372, "FIDT4"], [50, 360, "FIDT3"]]) {
+    s += `<circle cx="${x}" cy="${y}" r="4" fill="#E1BE3C"/><circle cx="${x}" cy="${y}" r="9" fill="none" stroke="${cur.accent}" stroke-width="2"/>
+      <text x="${x + 12}" y="${y - 8}" fill="${cur.accent}" font-size="13" font-weight="700" font-family="sans-serif" stroke="${cur.panelEdge}" stroke-width="3" paint-order="stroke">${n}</text>`;
+  }
+  document.getElementById("board").innerHTML = s;
+}
+rows(); apply();
+</script>
+</body>
+</html>
