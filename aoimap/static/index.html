@@ -20,6 +20,7 @@
     <button data-tab="front">3  FRONT</button>
     <button data-tab="back">4  BACK</button>
     <button data-tab="map">5  MAP</button>
+    <button data-tab="history">HISTORY</button>
   </nav>
 
   <div id="msg" class="msg" hidden></div>
@@ -37,9 +38,18 @@
           <input type="file" id="file-bom" accept=".csv,.txt,.xlsx">
           <b>BOM</b><span>.csv (or .xlsx)</span><em id="bom-state">Not loaded</em>
         </label>
+        <div id="project-box" hidden>
+          <h3>THIS BOARD</h3>
+          <div class="grid2">
+            <span class="lab">SERIAL</span><input id="proj-serial" placeholder="Serial number or label">
+            <span class="lab">NOTES</span><textarea id="proj-notes" rows="2" placeholder="Anything worth keeping with this board"></textarea>
+          </div>
+          <div class="row"><button id="proj-new">NEW BOARD, SAME DESIGN</button><span class="dim" id="proj-uid"></span></div>
+        </div>
         <div id="boards-box">
-          <h3>SAVED BOARDS</h3>
+          <h3>RECENT PROJECTS</h3>
           <div id="boards" class="list"></div>
+          <div class="row"><button data-goto="history">ALL HISTORY</button></div>
         </div>
       </div>
       <div class="col wide" id="design-box" hidden>
@@ -170,6 +180,21 @@
         <p class="dim" id="map-folder"></p>
         <h3>CAN'T BE CHECKED</h3>
         <div class="tablewrap"><table id="unchecked"><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </section>
+  <!-- HISTORY -->
+  <section id="tab-history" class="tab" hidden>
+    <div class="cols">
+      <div class="col">
+        <h2>PAST PROJECTS</h2>
+        <div class="row"><input id="hist-search" placeholder="Board, serial, notes or file name (* matches any part)"></div>
+        <p class="dim" id="hist-status"></p>
+        <div class="tablewrap"><table id="hist-list"><thead><tr>
+          <th>Updated</th><th>Board</th><th>Serial</th><th>Front</th><th>Back</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="col wide" id="hist-detail">
+        <p class="dim">Choose a project to see its files, photos and log.</p>
       </div>
     </div>
   </section>

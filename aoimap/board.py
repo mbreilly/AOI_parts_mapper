@@ -1,8 +1,11 @@
 """One board being mapped: its files, the user's choices (the board profile), the photos of each
-side and their alignment, kept in a folder per board under the data folder:
+side and their alignment. Each board mapped is a project with its own folder (see projects.py), so
+earlier boards stay in the history:
 
-    <data>/boards/<board>/
-        profile.json            choices kept for the next board of the same design
+    <data>/boards/<board>/profile.json      choices kept for the next board of the same design
+    <data>/projects/<uid>/                  everything for one board mapped:
+        project.json            board name, serial, notes, original file names, log
+        profile.json            the choices used for this project
         design.json             the parts map from the ODB++ and BOM
         source/                 the ODB++ and BOM as loaded
         front/ back/            reference.jpg, alignment.json, parts.json, map.jpg, closeups/
@@ -14,6 +17,7 @@ import io
 import json
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -23,6 +27,7 @@ from . import bom as bomlib
 from . import design as designlib
 from . import odb as odblib
 from . import photo as ph
+from . import projects as pj
 
 DEFAULT_PROFILE = {
     "columns": None, "kinds": {}, "hidden": {}, "rot_sign": None, "markings": dict(designlib.DEFAULT_MARKINGS),
@@ -31,8 +36,7 @@ DEFAULT_PROFILE = {
 }
 
 
-def slug(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "board"
+slug = pj.slug
 
 
 def _write_json(path: Path, obj):
@@ -62,35 +66,104 @@ class Board:
         self.profile = json.loads(json.dumps(DEFAULT_PROFILE))
         self.messages = []
         self.sides = {}
+        self.project = None         # project.json of the board being mapped
+        self.on_change = None       # called with a project's uid whenever it changes
+        self._quiet = False         # set while reopening, which changes nothing
+        self._import_old_boards()
 
-    # ---- folders and profiles -------------------------------------------------------------
+    # ---- folders, profiles and projects ------------------------------------------------------
     @property
     def dir(self) -> Path | None:
-        return self.data / "boards" / slug(self.name) if self.name else None
+        return pj.folder(self.data, self.project["uid"]) if self.project else None
 
-    def list_boards(self) -> list[dict]:
-        out = []
-        for d in sorted((self.data / "boards").iterdir()):
-            if (d / "profile.json").is_file():
-                des = _read_json(d / "design.json", {}) or {}
-                out.append({"name": d.name, "parts": len(des.get("parts", [])),
-                            "sides": [s for s in ("front", "back") if (d / s / "reference.jpg").is_file()]})
-        return out
+    def _profile_path(self, name: str) -> Path:
+        return self.data / "boards" / slug(name) / "profile.json"
 
-    def open_board(self, name: str):
-        d = self.data / "boards" / slug(name)
+    def _touch(self, what: str | None = None, p: dict | None = None):
+        """Notes that a project changed (and what was done, for its log)."""
+        p = p or self.project
+        if not p or (self._quiet and p is self.project):
+            return
+        if what:
+            pj.log(self.data, p, what)
+        else:
+            p["updated"] = pj.now()
+            pj.save(self.data, p)
+        if self.on_change:
+            self.on_change(p["uid"])
+
+    def _has_photos(self) -> bool:
+        return any(st.get("img") is not None for st in self.sides.values())
+
+    def open_project(self, uid: str):
+        """Reopens a project from the history, with its photos, as it was left."""
+        p = pj.load(self.data, uid)
+        d = pj.folder(self.data, uid)
         src = d / "source"
-        odbs = [p for p in src.glob("odb.*")] if src.is_dir() else []
-        boms = [p for p in src.glob("bom.*")] if src.is_dir() else []
+        odbs = sorted(src.glob("odb.*")) if src.is_dir() else []
+        boms = sorted(src.glob("bom.*")) if src.is_dir() else []
         if not (odbs and boms):
-            raise ValueError(f"{name} has no saved ODB++ and BOM.")
-        self.name = d.name
-        self.profile = {**json.loads(json.dumps(DEFAULT_PROFILE)), **_read_json(d / "profile.json", {})}
-        self.odb_path, self.bom_path = odbs[0], boms[0]
-        self._load_design()
+            raise ValueError(f"{p['board']} has no saved ODB++ and BOM.")
+        self.project, self.name = p, p["board"]
+        saved = _read_json(d / "profile.json") or _read_json(self._profile_path(self.name), {})
+        self.profile = {**json.loads(json.dumps(DEFAULT_PROFILE)), **saved}
+        self.odb_path, self.bom_path, self.odb = odbs[0], boms[0], None
+        self._odb_filename, self._bom_filename = p.get("odb_file") or None, p.get("bom_file") or None
+        self.messages = []
         self.sides = {}
-        for side in ("front", "back"):
-            self._load_side(side)
+        self._quiet = True
+        try:
+            self._load_design()
+            for side in ("front", "back"):
+                self._load_side(side)
+        finally:
+            self._quiet = False
+
+    def new_from(self, uid: str):
+        """Starts a new project for another board of the same design as a past one."""
+        old = pj.load(self.data, uid)
+        p = pj.new(self.data, old["board"])
+        p.update(odb_file=old.get("odb_file", ""), bom_file=old.get("bom_file", ""))
+        pj.copy_source(self.data, uid, p)
+        # the latest choices for this design, not the ones the old project was made with
+        if self._profile_path(old["board"]).is_file():
+            shutil.copy(self._profile_path(old["board"]), pj.folder(self.data, p["uid"]) / "profile.json")
+        pj.log(self.data, p, f"Started from the design of {uid}")
+        self.open_project(p["uid"])
+        self._touch()
+
+    def set_info(self, uid: str, serial: str | None = None, notes: str | None = None):
+        """The serial (or other label) and notes of a project, from the page."""
+        p = self.project if self.project and self.project["uid"] == uid else pj.load(self.data, uid)
+        said = []
+        if serial is not None and serial.strip() != p.get("serial", ""):
+            p["serial"] = serial.strip()[:128]
+            said.append(f"Serial set to {p['serial']}" if p["serial"] else "Serial cleared")
+        if notes is not None and notes != p.get("notes", ""):
+            p["notes"] = notes[:5000]
+            said.append("Notes changed")
+        if said:
+            self._touch("; ".join(said), p)
+        return p
+
+    def _import_old_boards(self):
+        """Boards saved by earlier versions (one folder per board name) become projects once."""
+        for d in sorted((self.data / "boards").iterdir()):
+            src = d / "source"
+            if not src.is_dir() or (d / "imported.txt").is_file():
+                continue
+            when = datetime.fromtimestamp(src.stat().st_mtime)
+            p = pj.new(self.data, d.name, when)
+            nd = pj.folder(self.data, p["uid"])
+            for item in ("source", "front", "back"):
+                if (d / item).is_dir():
+                    shutil.copytree(d / item, nd / item)
+            for f in ("design.json", "parts_map.csv", "profile.json"):
+                if (d / f).is_file():
+                    shutil.copy(d / f, nd / f)
+            p["log"].append({"at": p["created"], "what": f"Imported from the old boards/{d.name} folder"})
+            pj.save(self.data, p)
+            (d / "imported.txt").write_text(f"Copied to projects/{p['uid']} on {pj.now()}\n")
 
     # ---- loading files --------------------------------------------------------------------
     def add_file(self, kind: str, filename: str, data: bytes) -> list[str]:
@@ -108,6 +181,15 @@ class Board:
         else:
             self.bom_path, self.bom = dest, None
             self._bom_filename = filename
+        other = "bom" if kind == "odb" else "odb"
+        op = getattr(self, other + "_path")
+        if op and op.parent != staging:
+            # one file replaced on a board already open: the other is copied from its project
+            keep = staging / f"{other}{''.join(op.suffixes)}"
+            for old in staging.glob(f"{other}.*"):
+                old.unlink()
+            shutil.copy(op, keep)
+            setattr(self, other + "_path", keep)
         self.messages = []
         if self.odb_path and self.bom_path:
             self._load_design(new_files=True)
@@ -122,15 +204,23 @@ class Board:
     def _load_design(self, new_files=False):
         if self.odb is None or new_files:
             self.odb, self.steps = odblib.load(self.odb_path, self.profile.get("step"))
+            if not new_files and self.name:
+                self.odb.name = self.name   # the saved copy is called odb.*
             if new_files and getattr(self, "_odb_filename", None):
                 self.odb.name = re.sub(r"(_odb)?(\.tgz|\.tar\.gz|\.tar|\.zip)$", "", self._odb_filename, flags=re.I)
         if new_files:
             # a profile saved for this board name starts the choices
             self.name = slug(self.odb.name)
-            saved = _read_json(self.dir / "profile.json") if self.dir else None
+            saved = _read_json(self._profile_path(self.name))
             self.profile = {**json.loads(json.dumps(DEFAULT_PROFILE)), **(saved or {})}
             if saved:
                 self.messages.append(f"Using the saved choices for {self.name}.")
+            # files changed before any photo was taken stay in the same project
+            if not (self.project and self.project["board"] == self.name and not self._has_photos()):
+                self.project = pj.new(self.data, self.name)
+                self.messages.append("Started a new project; it is kept in the history.")
+            self.project["odb_file"] = getattr(self, "_odb_filename", None) or self.project.get("odb_file", "")
+            self.project["bom_file"] = getattr(self, "_bom_filename", None) or self.project.get("bom_file", "")
             self.sides = {}
             for side in ("front", "back"):
                 self._load_side(side)
@@ -143,7 +233,11 @@ class Board:
             src.mkdir(parents=True)
             shutil.copy(self.odb_path, src / ("odb" + "".join(self.odb_path.suffixes)))
             shutil.copy(self.bom_path, src / ("bom" + self.bom_path.suffix))
+            self.odb_path = src / ("odb" + "".join(self.odb_path.suffixes))
+            self.bom_path = src / ("bom" + self.bom_path.suffix)
             self.save_profile()
+            self._touch(f"Loaded ODB++ {self.project['odb_file']} and BOM {self.project['bom_file']}: "
+                        f"{len(self.design['parts'])} polarised parts")
 
     def rebuild(self):
         self.design = designlib.build(self.odb, self.bom, self.profile)
@@ -154,12 +248,14 @@ class Board:
                 self.design["rot_note"] = (f"Rotation direction taken from the design's pin 1 positions "
                                            f"({max(ev.values())} part(s) agree).")
         _write_json(self.dir / "design.json", self.design)
+        self._touch()
         for side in list(self.sides):
             if self.sides[side].get("mapping"):
                 self._place(side)
 
     def save_profile(self):
         _write_json(self.dir / "profile.json", self.profile)
+        _write_json(self._profile_path(self.name), self.profile)
 
     def set_columns(self, cols: dict):
         self.profile["columns"] = {k: (int(v) if v not in (None, "") else None) for k, v in cols.items()}
@@ -247,6 +343,7 @@ class Board:
         for f in ("alignment.json", "parts.json", "map.jpg"):
             (d / f).unlink(missing_ok=True)
         self.sides[side] = {"img": img, "mapping": None, "points": {}, "placed": [], "warnings": [], "closeups": {}}
+        self._touch(f"{side.capitalize()} photo taken ({img.shape[1]} x {img.shape[0]})")
         return {"width": img.shape[1], "height": img.shape[0]}
 
     def anchors(self, side) -> dict:
@@ -304,6 +401,9 @@ class Board:
         _write_json(self._side_dir(side) / "alignment.json",
                     {"points": use, "orient": orient, "rot_sign": self.design["rot_sign"], "mapping": m.to_dict(),
                      "how": st["how"], "warnings": warnings})
+        placed = st["placed"]
+        self._touch(f"{side.capitalize()} lined up ({st['how']}): {sum(r['checkable'] for r in placed)} of {len(placed)} parts checkable"
+                    + (f"; {len(warnings)} warning(s)" if warnings else ""))
         return self.side_state(side)
 
     def _place(self, side):
@@ -331,6 +431,7 @@ class Board:
         _write_json(d / "parts_full.json", placed)
         (d / "map.jpg").write_bytes(ph.overlay(st["img"], placed, width=0))
         self.write_csv()
+        self._touch()
 
     # ---- closeups -------------------------------------------------------------------------
     def closeup_photo(self, side, index, data: bytes):
@@ -346,6 +447,7 @@ class Board:
              "mapping": None, "points": {}}
         st["closeups"][index] = c
         self._save_closeup(side, c)
+        self._touch(f"{side.capitalize()} closeup {index + 1} taken")
         return {"width": img.shape[1], "height": img.shape[0]}
 
     def closeup_align(self, side, index, points: dict):
@@ -362,6 +464,8 @@ class Board:
         c.update(mapping=m, points=use)
         self._save_closeup(side, c)
         self._place(side)
+        self._touch(f"{side.capitalize()} closeup {index + 1} lined up: "
+                    f"{sum(1 for r in st['placed'] if r.get('via') == index)} parts checked on it")
         return self.side_state(side)
 
     def _save_closeup(self, side, c):
@@ -431,7 +535,8 @@ class Board:
                 "parts": [{k: p[k] for k in ("ref", "side", "kind", "value", "package", "pin1_dir", "pin1_how", "hidden", "size")}
                           for p in d["parts"]]},
             "sides": {s: self.side_state(s) for s in ("front", "back")} if d else {},
-            "boards": self.list_boards(),
+            "project": None if not self.project else {k: self.project.get(k, "") for k in
+                                                      ("uid", "board", "serial", "notes", "created", "odb_file", "bom_file")},
         }
 
     def write_csv(self):

@@ -13,7 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import db as dblib
 from . import photo as ph
+from . import projects as pj
 from .board import Board
 from .bom import BomError
 from .odb import OdbError
@@ -23,8 +25,10 @@ MAX_UPLOAD = 400 * 1024 * 1024
 
 
 class App:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, db_config: Path | None = dblib.DEFAULT_CONFIG):
         self.board = Board(data_dir)
+        self.history = dblib.History(data_dir, db_config)
+        self.board.on_change = self.history.changed
         self.lock = threading.Lock()
 
 
@@ -85,6 +89,8 @@ def make_handler(app: App):
                     return self._send(200, (STATIC / parts[1]).read_bytes(), ctype, cache=True)
                 if parts[0] != "api":
                     return self._err("Not found", 404)
+                if parts[1:2] == ["history"]:
+                    return self._history_get(parts[2:], q)
                 b = app.board
                 with app.lock:
                     if parts[1:] == ["state"]:
@@ -132,6 +138,35 @@ def make_handler(app: App):
                 traceback.print_exc()
                 return self._err(f"Something went wrong: {e}", 500)
 
+        def _history_get(self, r, q):
+            """The history page reads project folders and the database, not the board being mapped,
+            so it doesn't wait for the board's lock."""
+            h = app.history
+            if not r:
+                return self._json({**h.search(q.get("q", ""), q.get("limit", 50)),
+                                   "current": app.board.project["uid"] if app.board.project else None})
+            uid = r[0]
+            if len(r) == 1:
+                return self._json(h.detail(uid))
+            if r[1] == "file" and len(r) > 2:
+                rel = "/".join(r[2:])
+                if q.get("thumb"):
+                    return self._send(200, pj.thumb(app.board.data, uid, rel, int(q["thumb"])), "image/jpeg", cache=True)
+                f = pj.file_path(app.board.data, uid, rel)
+                ctype = {".jpg": "image/jpeg", ".json": "application/json", ".csv": "text/csv"}.get(f.suffix, "application/octet-stream")
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(f.stat().st_size))
+                self.send_header("Cache-Control", "no-store")
+                if q.get("download"):
+                    self.send_header("Content-Disposition", f'attachment; filename="{q["download"].replace(chr(34), "")}"')
+                self.end_headers()
+                with f.open("rb") as fh:
+                    while chunk := fh.read(1 << 20):
+                        self.wfile.write(chunk)
+                return None
+            return self._err("Not found", 404)
+
         def do_POST(self):
             u = urlparse(self.path)
             parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
@@ -148,9 +183,18 @@ def make_handler(app: App):
                             return self._err("Upload kind must be odb or bom.")
                         b.add_file(kind, q.get("name", kind), self._body())
                         return self._json(b.state())
-                    if r == ["open"]:
-                        b.open_board(self._jbody()["name"])
-                        return self._json(b.state())
+                    if len(r) == 3 and r[0] == "history":
+                        uid, what = r[1], r[2]
+                        if what == "open":
+                            b.open_project(uid)
+                            return self._json(b.state())
+                        if what == "new":
+                            b.new_from(uid)
+                            return self._json(b.state())
+                        if what == "info":
+                            j = self._jbody()
+                            b.set_info(uid, j.get("serial"), j.get("notes"))
+                            return self._json(app.history.detail(uid))
                     if r == ["columns"]:
                         b.set_columns(self._jbody())
                         return self._json(b.state())
@@ -206,11 +250,15 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--data", type=Path, default=Path.home() / "aoimap-data", help="where boards are kept")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--db", type=Path, default=dblib.DEFAULT_CONFIG,
+                    help="MySQL option file with the database login (default ~/.config/aoimap/db.cnf)")
+    ap.add_argument("--no-db", action="store_true", help="keep the history in the project folders only")
     a = ap.parse_args(argv)
-    app = App(a.data)
+    app = App(a.data, None if a.no_db else a.db)
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(app))
     url = f"http://localhost:{a.port}/"
     print(f"AOI parts mapper at {url}  (boards kept in {a.data})  Ctrl+C to stop")
+    print(f"History: {app.history.status}")
     if not a.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:

@@ -2,3 +2,5 @@ numpy>=1.24
 opencv-python>=4.8
 # optional: reading .xlsx BOMs
 # openpyxl>=3.1
+# optional: the project history in MariaDB/MySQL (without it, history comes from the project folders)
+pymysql>=1.1

@@ -25,6 +25,8 @@ Options:
 - `--port 8091` changes the port.
 - `--data D:\aoi` changes where boards are kept. The default is `aoimap-data` in your home folder.
 - `--no-browser` stops it opening a browser.
+- `--db path/to/db.cnf` is the database login (default `~/.config/aoimap/db.cnf`); `--no-db` turns
+  the database off. See **History** below.
 
 ## Using it
 
@@ -71,15 +73,60 @@ Options:
 Every choice made in the Parts tab is kept in a **board profile**, along with the column mapping,
 the orientation of each side, the camera, the size limit and the rotation direction. The profile
 is saved per board name, and is reused automatically the next time the same ODB++ is loaded.
-**Saved boards** on the Files tab reopens a board with its photos.
+
+## History
+
+Each board mapped is a **project**, kept in its own folder, so mapping the next board never
+overwrites the last one. A project starts when an ODB++ and BOM are loaded (loading one of them
+again before any photo is taken stays in the same project), or with **New board, same design**,
+which carries over the files and the latest choices but not the photos. Give each board a
+**serial** or label and notes on the Files tab.
+
+The **History** tab lists every project, newest first, with how many parts of each side could be
+checked. Search by board, serial, notes or file name (`*` matches any part). Choosing a project
+shows its photos, maps and closeups, the parts that can't be checked, every file (to download),
+and a log of what was done. From there, **Reopen** carries on with it as it was left, or **New
+board, same design** starts the next board. The Files tab lists the most recent projects.
+
+The history is kept in **MariaDB** (or MySQL) when there's a login for it, and in the project
+folders either way. If the database can't be reached the app carries on, the History tab reads the
+folders, and the database catches up from the folders the next time it can be reached. Changes are
+written a couple of seconds after the last click, in the background.
+
+To set up the database (once, as a MariaDB admin):
+
+    PW=$(openssl rand -hex 16)
+    sudo mariadb -e "CREATE DATABASE IF NOT EXISTS aoimap CHARACTER SET utf8mb4;
+      CREATE USER IF NOT EXISTS 'aoimap'@'localhost' IDENTIFIED BY '$PW';
+      ALTER USER 'aoimap'@'localhost' IDENTIFIED BY '$PW';
+      GRANT ALL ON aoimap.* TO 'aoimap'@'localhost';"
+    mkdir -p ~/.config/aoimap
+    printf '[client]\nuser=aoimap\npassword=%s\ndatabase=aoimap\nhost=localhost\n' "$PW" > ~/.config/aoimap/db.cnf
+    chmod 600 ~/.config/aoimap/db.cnf
+    pip install pymysql
+
+The app makes its tables itself:
+
+| Table | What |
+|---|---|
+| `aoi_projects` | One row per project: board, serial, notes, station, file names, part counts and how many of each side are checkable, folder, times |
+| `aoi_project_files` | Every file in the project folder: path, kind (odb, bom, photo, map, closeup, csv, design...), side, size, time |
+| `aoi_project_log` | What was done and when |
+| `aoi_project_parts` | Every placed part of each side: kind, value, checkable, closeup, why not, size in pixels |
+
+Photos and files stay in the project folders; the database records where they are.
 
 ## What it saves
 
-Everything is kept under `<data>/boards/<board>/`:
+Each project is kept under `<data>/projects/<date>-<time>-<board>/`, and the choices to reuse for
+the next board of the same design in `<data>/boards/<board>/profile.json`. Boards saved by earlier
+versions (in `<data>/boards/<board>/`) are copied into projects the first time this version starts.
 
 | File | What |
 |---|---|
-| `profile.json` | The choices above |
+| `project.json` | Board, serial, notes, original file names and the log |
+| `profile.json` | The choices above, as used for this project |
+| `source/` | The ODB++ and BOM as loaded |
 | `design.json` | Every polarised part: position, rotation, side, package outline, pin 1 and its direction, kind, value, hidden |
 | `parts_map.csv` | One row per part: design data, plus for each side whether it can be checked, why not, its size in pixels and its centre in the photo |
 | `front/`, `back/` | `reference.jpg`, `alignment.json` (clicked points and the transform), `parts.json`, `parts_full.json`, `map.jpg`, `closeups/` |
@@ -100,6 +147,9 @@ it in any browser.
 
     python tests/test_engine.py        # or: python -m pytest tests
     python tests/e2e_page.py out/      # drives the page in headless Chromium (needs playwright)
+
+Set `AOIMAP_TEST_DB` to the option file of a throwaway MariaDB database to include the database in
+both (otherwise that test is skipped and the page runs with `--no-db`).
 
 The tests build a made-up two-sided board: an ODB++ with clockwise rotations and off-centre
 packages, a BOM with different column names from the PTC's, and photos rendered from a known

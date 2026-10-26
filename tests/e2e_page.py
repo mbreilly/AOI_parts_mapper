@@ -3,6 +3,7 @@
 
     python tests/e2e_page.py <out folder>"""
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -24,13 +25,15 @@ cv2.imwrite(str(tmp / "front.jpg"), fx.render("front", Hf), [cv2.IMWRITE_JPEG_QU
 cv2.imwrite(str(tmp / "back.jpg"), fx.render("back", Hb), [cv2.IMWRITE_JPEG_QUALITY, 95])
 
 port = 18093
-srv = subprocess.Popen([sys.executable, "-m", "aoimap", "--port", str(port), "--data", str(tmp / "data"), "--no-browser"],
+srv = subprocess.Popen([sys.executable, "-m", "aoimap", "--port", str(port), "--data", str(tmp / "data"), "--no-browser",
+                        *(["--db", os.environ["AOIMAP_TEST_DB"]] if os.environ.get("AOIMAP_TEST_DB") else ["--no-db"])],
                        cwd=HERE.parent)
 time.sleep(1.5)
 errors = []
 try:
     with sync_playwright() as p:
-        br = p.chromium.launch(executable_path="/opt/pw-browsers/chromium")
+        exe = "/opt/pw-browsers/chromium"
+        br = p.chromium.launch(**({"executable_path": exe} if Path(exe).exists() else {}))
         pg = br.new_page(viewport={"width": 1500, "height": 950})
         pg.on("pageerror", lambda e: errors.append(str(e)))
         pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
@@ -87,6 +90,25 @@ try:
         print("back summary:", st["sides"]["back"]["summary"])
         pg.click("button[data-tab=map]"); pg.wait_for_timeout(300)
         pg.screenshot(path=str(out / "7-map.png"))
+        # this board's serial, then the history
+        pg.click("button[data-tab=files]")
+        pg.fill("#proj-serial", "PTC-0042"); pg.press("#proj-serial", "Tab"); pg.wait_for_timeout(400)
+        pg.click("button[data-tab=history]"); pg.wait_for_selector("#hist-detail .gallery img")
+        pg.wait_for_function("[...document.querySelectorAll('#hist-detail .gallery img')].every(i => i.complete && i.naturalWidth > 0)")
+        print("history:", pg.inner_text("#hist-status"), "|", pg.inner_text("#hist-list tbody")[:200].replace("\n", " | "))
+        assert "PTC-0042" in pg.inner_text("#hist-detail h2")
+        pg.screenshot(path=str(out / "8-history.png"), full_page=True)
+        # another board of the same design, then back to the first through the history
+        pg.click("#hist-detail [data-newfrom]"); pg.wait_for_selector("#tab-files:not([hidden]) #project-box:not([hidden])")
+        pg.wait_for_timeout(500)
+        assert pg.input_value("#proj-serial") == ""
+        pg.screenshot(path=str(out / "9-new-board.png"))
+        pg.click("button[data-tab=history]"); pg.wait_for_selector("#hist-list tr[data-uid]:nth-child(2)")
+        pg.click("#hist-list tr[data-uid]:nth-child(2)"); pg.wait_for_selector("#hist-detail [data-reopen]")
+        pg.click("#hist-detail [data-reopen]"); pg.wait_for_timeout(800)
+        st = pg.evaluate("fetch('/api/state').then(r => r.json())")
+        assert st["project"]["serial"] == "PTC-0042" and st["sides"]["back"]["aligned"], st["project"]
+        print("reopened:", st["project"]["uid"], st["sides"]["back"]["summary"])
         br.close()
 finally:
     srv.terminate()

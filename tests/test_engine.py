@@ -135,7 +135,7 @@ def test_back_three_fiducials_affine_and_closeups():
     assert not placed["DB4"]["checkable"]
     # the state survives reopening the board
     b2 = Board(b.data)
-    b2.open_board(b.name)
+    b2.open_project(b.project["uid"])
     p2 = {r["ref"]: r for r in b2.sides["back"]["placed"]}
     assert p2["DB1"]["checkable"] and not p2["DB4"]["checkable"]
 
@@ -192,6 +192,111 @@ def test_no_fiducials_uses_board_corners():
     b.design["fiducials"] = {}
     a = b.anchors("front")
     assert [p["what"] for p in a["prompts"]] == ["corner"] * 4
+
+
+def test_projects_history_and_new_board_of_same_design():
+    from aoimap import projects as pj
+    b = new_board()
+    first = b.project["uid"]
+    assert b.dir == b.data / "projects" / first and (b.dir / "source").is_dir()
+    assert b.project["odb_file"] == ODB.name and b.project["bom_file"] == BOM.name
+    # a BOM loaded again before any photo stays in the same project
+    b.add_file("bom", BOM.name, BOM.read_bytes())
+    assert b.project["uid"] == first and pj.uids(b.data) == [first]
+    Hm = fx.camera("front")
+    b.set_photo("front", cv2.imencode(".png", fx.render("front", Hm))[1].tobytes())
+    b.align("front", click(Hm, b.design, ["FIDT1", "FIDT2", "FIDT3", "FIDT4"], "front"))
+    b.set_info(first, serial="SN-001", notes="first one")
+    log = [e["what"] for e in pj.load(b.data, first)["log"]]
+    assert log[0].startswith("Loaded ODB++") and any(w.startswith("Front lined up") for w in log) and "Serial set to SN-001" in log[-1]
+    s = pj.summary(b.data, first)
+    assert s["front"]["aligned"] and s["front"]["checkable"] > 0 and not s["back"]["photo"]
+    kinds = {f["path"]: f["kind"] for f in pj.files(b.data, first)}
+    assert kinds["front/reference.jpg"] == "photo" and kinds["front/map.jpg"] == "map" and kinds["parts_map.csv"] == "csv"
+    assert any(k == "odb" for k in kinds.values()) and any(k == "bom" for k in kinds.values())
+    assert pj.thumb(b.data, first, "front/map.jpg", 200)[:2] == b"\xff\xd8"
+    for bad in ("../project.json", "/etc/passwd", "thumbs/200/front/map.jpg"):
+        try:
+            pj.file_path(b.data, first, bad); raise AssertionError(bad)
+        except ValueError:
+            pass
+    # the next board of the same design is a new project; the first is left as it was
+    b.set_option("min_px", 11)
+    b.new_from(first)
+    second = b.project["uid"]
+    assert second != first and not b._has_photos() and b.profile["min_px"] == 11
+    assert b.project["odb_file"] == ODB.name and b.design and b.project["serial"] == ""
+    assert (b.data / "projects" / first / "front" / "reference.jpg").is_file()
+    assert not (b.dir / "front" / "reference.jpg").exists()
+    # reopening the first one brings back its photo and alignment, without changing it
+    before = pj.load(b.data, first)["updated"]
+    b.open_project(first)
+    assert b.sides["front"]["mapping"] is not None and b.project["serial"] == "SN-001"
+    assert pj.load(b.data, first)["updated"] == before
+    # loading the files again after photos starts another project
+    b.add_file("odb", ODB.name, ODB.read_bytes())
+    assert b.project["uid"] not in (first, second) and len(pj.uids(b.data)) == 3
+
+
+def test_old_board_folders_become_projects():
+    import shutil
+    from aoimap import projects as pj
+    b = new_board()
+    old = b.data / "boards" / "oldboard"
+    shutil.copytree(b.dir / "source", old / "source")
+    shutil.copy(b.dir / "design.json", old / "design.json")
+    b2 = Board(b.data)
+    got = [pj.load(b.data, u) for u in pj.uids(b.data)]
+    imported = [p for p in got if p["board"] == "oldboard"]
+    assert len(imported) == 1 and (old / "imported.txt").is_file()
+    Board(b.data)   # only once
+    assert len([u for u in pj.uids(b.data) if "oldboard" in u]) == 1
+    b2.open_project(imported[0]["uid"])
+    assert b2.design["parts"]
+
+
+def test_database_history():
+    """Needs a MariaDB login: AOIMAP_TEST_DB=path/to/option-file (a throwaway database)."""
+    import os
+    import time
+    from aoimap import db as dblib
+    cfg = os.environ.get("AOIMAP_TEST_DB")
+    if not cfg:
+        print("skip test_database_history (set AOIMAP_TEST_DB)")
+        return
+    b = new_board()
+    h = dblib.History(b.data, Path(cfg), delay=0.2)
+    b.on_change = h.changed
+    first = b.project["uid"]
+    Hm = fx.camera("front")
+    b.set_photo("front", cv2.imencode(".png", fx.render("front", Hm))[1].tobytes())
+    b.align("front", click(Hm, b.design, ["FIDT1", "FIDT2", "FIDT3", "FIDT4"], "front"))
+    b.set_info(first, serial="DBTEST-7")
+    for _ in range(100):
+        r = h.search("DBTEST-7")
+        if r["source"] == "database" and r["projects"] and r["projects"][0]["front"]["aligned"]:
+            break
+        time.sleep(0.1)
+    assert r["source"] == "database" and [p["uid"] for p in r["projects"]] == [first], r
+    row = r["projects"][0]
+    assert row["serial"] == "DBTEST-7" and row["front"]["checkable"] > 0 and row["front"]["photo"]
+    n = h._run(lambda c: (c.execute("SELECT COUNT(*) AS n FROM aoi_project_parts p JOIN aoi_projects j ON j.id=p.project_id WHERE j.uid=%s", (first,)), c.fetchone()["n"])[1])
+    assert n == row["front"]["parts"]
+    files = h._run(lambda c: (c.execute("SELECT kind FROM aoi_project_files f JOIN aoi_projects j ON j.id=f.project_id WHERE j.uid=%s", (first,)), [x["kind"] for x in c.fetchall()])[1])
+    assert {"odb", "bom", "photo", "map", "csv"} <= set(files)
+    assert h.search("DBTEST*")["projects"] and not h.search("nothing-like-this")["projects"]
+    d = h.detail(first)
+    assert d["in_db"] and d["log"][0]["what"] == "Serial set to DBTEST-7"
+    # a folder the database missed is written when it catches up
+    h2 = dblib.History(b.data, Path(cfg), delay=0.2)
+    h._run(lambda c: c.execute("DELETE FROM aoi_projects WHERE uid=%s", (first,)))
+    h2.catch_up()
+    assert h2.search("DBTEST-7")["projects"]
+    h._run(lambda c: c.execute("DELETE FROM aoi_projects WHERE uid=%s", (first,)))
+    # without a login the history comes from the folders
+    h3 = dblib.History(b.data, b.data / "no-such.cnf")
+    r3 = h3.search("DBTEST")
+    assert r3["source"] == "folders" and r3["projects"][0]["serial"] == "DBTEST-7"
 
 
 if __name__ == "__main__":

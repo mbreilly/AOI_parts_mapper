@@ -88,21 +88,27 @@ function knob(el, value, onChange, fmt = v => v) {
 $("#tabs").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   if (b.disabled) return;
-  tab = b.dataset.tab; ui.closeup = null; stopCamera(); say("");
+  goTab(b.dataset.tab);
+});
+function goTab(t) {
+  tab = t; ui.closeup = null; stopCamera(); say("");
   render();
   if (tab === "front" || tab === "back") loadAnchors(tab);
-});
+  if (tab === "history") loadHistory();
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-goto]"); if (b) goTab(b.dataset.goto); });
 
 function render() {
   $$("#tabs button").forEach(b => {
     b.classList.toggle("on", b.dataset.tab === tab);
-    b.disabled = b.dataset.tab !== "files" && !(S && S.design);
+    b.disabled = !["files", "history"].includes(b.dataset.tab) && !(S && S.design);
   });
   $("#tab-files").hidden = tab !== "files";
   $("#tab-parts").hidden = tab !== "parts";
   $("#tab-side").hidden = !(tab === "front" || tab === "back");
   $("#tab-map").hidden = tab !== "map";
-  if (S && S.design) $("#sub").textContent = `${S.design.name}  ·  ${S.design.units}  ·  ${countAll()} polarised parts`;
+  $("#tab-history").hidden = tab !== "history";
+  if (S && S.design) $("#sub").textContent = `${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}  ·  ${countAll()} polarised parts`;
   if (tab === "files") renderFiles();
   if (tab === "parts") renderParts();
   if (tab === "front" || tab === "back") renderSide(tab);
@@ -126,8 +132,14 @@ function renderFiles() {
   if (!S) return;
   $("#drop-odb").classList.toggle("done", S.files.odb); $("#odb-state").textContent = S.files.odb ? "Loaded" : "Not loaded";
   $("#drop-bom").classList.toggle("done", S.files.bom); $("#bom-state").textContent = S.files.bom ? "Loaded" : "Not loaded";
-  $("#boards").innerHTML = S.boards.length ? S.boards.map(b => `<div><span class="grow">${esc(b.name)}</span><span class="dim">${b.parts} parts${b.sides.length ? " · photos: " + b.sides.join(", ") : ""}</span><button data-open="${esc(b.name)}">OPEN</button></div>`).join("")
-    : `<div class="dim">None yet. A board is saved as soon as its ODB++ and BOM are in.</div>`;
+  const p = S.project;
+  $("#project-box").hidden = !p;
+  if (p) {
+    if (document.activeElement !== $("#proj-serial")) $("#proj-serial").value = p.serial || "";
+    if (document.activeElement !== $("#proj-notes")) $("#proj-notes").value = p.notes || "";
+    $("#proj-uid").textContent = `Project ${p.uid}`;
+  }
+  loadRecent();
   const d = S.design;
   $("#design-box").hidden = !d;
   if (!d) return;
@@ -152,7 +164,42 @@ function renderFiles() {
   $("#columns").innerHTML = Object.entries(fields).map(([f, label]) => `<span class="lab">${label.toUpperCase()}</span>
     <select data-col="${f}"><option value="">(none)</option>${S.bom_header.map((h, i) => `<option value="${i}" ${S.bom_columns[f] === i ? "selected" : ""}>${esc(h || "column " + (i + 1))}</option>`).join("")}</select>`).join("");
 }
-$("#boards").addEventListener("click", e => { const b = e.target.closest("[data-open]"); if (b) act(() => post("/api/open", { name: b.dataset.open }), `Opened ${b.dataset.open}.`); });
+let recentAt = 0;
+async function loadRecent() {
+  if (Date.now() - recentAt < 3000) return;      // render() runs often; the list rarely changes
+  recentAt = Date.now();
+  try {
+    const h = await api("/api/history?limit=6");
+    $("#boards").innerHTML = h.projects.length ? h.projects.map(r => `<div class="${r.uid === h.current ? "cur" : ""}"><span class="grow">${esc(r.board)}${r.serial ? ` <span class="ok">${esc(r.serial)}</span>` : ""}<br><span class="dim">${esc(r.updated)} · ${sideBrief(r, "front")} · ${sideBrief(r, "back")}</span></span>${r.uid === h.current ? `<span class="dim">OPEN NOW</span>` : `<button data-reopen="${esc(r.uid)}">OPEN</button>`}</div>`).join("")
+      : `<div class="dim">None yet. A project is saved as soon as its ODB++ and BOM are in.</div>`;
+  } catch (e) { $("#boards").innerHTML = `<div class="dim">${esc(e.message)}</div>`; }
+}
+const sideBrief = (r, side) => {
+  const s = r[side], n = side === "front" ? "front" : "back";
+  if (!s.parts) return `${n} none`;
+  return s.aligned ? `${n} ${s.checkable}/${s.parts}` : s.photo ? `${n} photo` : `${n} –`;
+};
+function reopen(uid) {
+  return act(() => post(`/api/history/${encodeURIComponent(uid)}/open`, {}), "Reopened the project as it was left.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
+}
+function newFrom(uid) {
+  return act(() => post(`/api/history/${encodeURIComponent(uid)}/new`, {}), "New project for another board of the same design. Its choices are carried over; take the photos.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
+}
+document.addEventListener("click", e => {
+  const o = e.target.closest("[data-reopen]"); if (o) reopen(o.dataset.reopen);
+  const n = e.target.closest("[data-newfrom]"); if (n) newFrom(n.dataset.newfrom);
+});
+async function saveInfo(uid, body) {
+  try { const d = await post(`/api/history/${encodeURIComponent(uid)}/info`, body); recentAt = 0; return d; }
+  catch (e) { say(e.message, true); }
+}
+for (const id of ["#proj-serial", "#proj-notes"]) $(id).addEventListener("change", async () => {
+  if (!S || !S.project) return;
+  await saveInfo(S.project.uid, { serial: $("#proj-serial").value, notes: $("#proj-notes").value });
+  S.project.serial = $("#proj-serial").value.trim(); S.project.notes = $("#proj-notes").value;
+  say("Saved with this project."); render();
+});
+$("#proj-new").addEventListener("click", () => S && S.project && newFrom(S.project.uid));
 $("#step").addEventListener("change", e => act(() => post("/api/option", { key: "step", value: e.target.value })));
 $("#columns").addEventListener("change", e => {
   const cols = {}; $$("#columns select").forEach(s => cols[s.dataset.col] = s.value === "" ? null : +s.value);
@@ -454,9 +501,89 @@ function renderMap() {
   }
   html += `</div>`;
   $("#map-summary").innerHTML = html;
-  $("#map-folder").textContent = `Everything for this board is also saved in the app's data folder under boards/${S.name}/ (design.json, parts_map.csv, and each side's reference.jpg, alignment.json, parts.json and map.jpg).`;
+  $("#map-folder").textContent = `Everything for this board is kept with the project in the app's data folder under projects/${S.project ? S.project.uid : ""}/ (the ODB++ and BOM, design.json, parts_map.csv, and each side's reference.jpg, alignment.json, parts.json and map.jpg), and listed on the History tab.`;
   $("#unchecked tbody").innerHTML = rows.map(r => `<tr><td>${r.side}</td><td>${esc(r.ref)}</td><td>${KIND_NAMES[r.kind]}</td><td>${esc(r.value)}</td><td>${esc(r.reason)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="no">Nothing yet. Line up a photo of each side first.</td></tr>`;
+}
+
+// ---- history -------------------------------------------------------------------------------
+const H = { q: "", sel: null, list: [], timer: null };
+const kb = n => n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} kB`;
+const fileUrl = (uid, path, extra = "") => `/api/history/${encodeURIComponent(uid)}/file/${path.split("/").map(encodeURIComponent).join("/")}${extra}`;
+async function loadHistory() {
+  try {
+    const h = await api(`/api/history?limit=200&q=${encodeURIComponent(H.q)}`);
+    H.list = h.projects;
+    $("#hist-status").textContent = (h.source === "database" ? `${h.total} project(s) in the database.` : h.status) +
+      (H.q ? ` ${h.projects.length} match.` : "");
+    $("#hist-list tbody").innerHTML = h.projects.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
+      <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}${r.uid === h.current ? ` <span class="ok">OPEN</span>` : ""}</td><td>${esc(r.serial)}</td>
+      <td>${sideCell(r.front)}</td><td>${sideCell(r.back)}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No projects yet."}</td></tr>`;
+    if (!H.sel && h.projects.length) showProject(h.projects[0].uid);
+    else if (H.sel) showProject(H.sel);
+  } catch (e) { say(e.message, true); }
+}
+const sideCell = s => !s.parts ? `<span class="dim">none</span>` : s.aligned ? `${s.checkable}/${s.parts}` : s.photo ? "photo" : `<span class="dim">–</span>`;
+$("#hist-search").addEventListener("input", e => { H.q = e.target.value; clearTimeout(H.timer); H.timer = setTimeout(loadHistory, 300); });
+$("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[data-uid]"); if (tr) showProject(tr.dataset.uid); });
+
+async function showProject(uid) {
+  H.sel = uid;
+  $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === uid));
+  let d;
+  try { d = await api(`/api/history/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
+  if (H.sel !== uid) return;
+  const isOpen = S && S.project && S.project.uid === uid;
+  const sideLine = side => { const s = d[side]; return !s.parts ? "no polarised parts" : s.aligned ? `${s.checkable} of ${s.parts} checkable` : s.photo ? `${s.parts} polarised · photo not lined up` : `${s.parts} polarised · no photo`; };
+  const named = f => f.kind === "odb" && d.odb_file ? d.odb_file : f.kind === "bom" && d.bom_file ? d.bom_file : f.path;
+  const imgs = d.files.filter(f => ["photo", "map", "closeup"].includes(f.kind));
+  const label = f => `${f.side} ${f.kind === "photo" ? "photo" : f.kind === "map" ? "map" : "closeup " + (parseInt(f.path.split("/").pop(), 10) + 1)}`;
+  const order = { photo: 0, map: 1, closeup: 2 };
+  imgs.sort((a, b) => a.side.localeCompare(b.side) * -1 || order[a.kind] - order[b.kind] || a.path.localeCompare(b.path));
+  const csv = d.files.find(f => f.kind === "csv");
+  $("#hist-detail").innerHTML = `
+    <h2>${esc(d.board)}${d.serial ? "  ·  " + esc(d.serial) : ""}</h2>
+    <div class="row">
+      ${isOpen ? `<button data-goto="files" class="accent">OPEN NOW</button>` : `<button class="accent" data-reopen="${esc(uid)}">REOPEN</button>`}
+      <button data-newfrom="${esc(uid)}">NEW BOARD, SAME DESIGN</button>
+      ${csv ? `<a class="btn" href="${fileUrl(uid, csv.path, `?download=${encodeURIComponent(d.board + (d.serial ? "_" + d.serial : "") + "_parts_map.csv")}`)}">DOWNLOAD CSV</a>` : ""}
+    </div>
+    <div class="kv">
+      <b>Project</b><span>${esc(d.uid)}${d.in_db === false ? " · not in the database yet" : ""}</span>
+      <b>Started</b><span>${esc(d.created)} on ${esc(d.station)}</span>
+      <b>Last change</b><span>${esc(d.updated)}</span>
+      <b>ODB++ · BOM</b><span>${esc(d.odb_file || "–")} · ${esc(d.bom_file || "–")}</span>
+      <b>Polarised parts</b><span>${d.parts}${d.units ? " · units " + esc(d.units) : ""}</span>
+      <b>Front</b><span>${sideLine("front")}</span>
+      <b>Back</b><span>${sideLine("back")}</span>
+      <b>Closeups</b><span>${d.closeups}</span>
+      <b>Folder</b><span class="mono">${esc(d.folder)}</span>
+    </div>
+    <h3>SERIAL AND NOTES</h3>
+    <div class="grid2">
+      <span class="lab">SERIAL</span><input id="hd-serial" value="${esc(d.serial)}" placeholder="Serial number or label">
+      <span class="lab">NOTES</span><textarea id="hd-notes" rows="2">${esc(d.notes)}</textarea>
+    </div>
+    <div class="row"><button id="hd-save">SAVE</button></div>
+    <h3>PHOTOS AND MAPS</h3>
+    ${imgs.length ? `<div class="gallery">${imgs.map(f => `<a href="${fileUrl(uid, f.path)}" target="_blank" rel="noopener"><img loading="lazy" src="${fileUrl(uid, f.path, `?thumb=360&v=${encodeURIComponent(f.modified)}`)}" alt=""><span>${esc(label(f))}</span></a>`).join("")}</div>`
+      : `<p class="dim">No photos were taken for this project.</p>`}
+    <h3>CAN'T BE CHECKED</h3>
+    ${d.unchecked.length ? `<div class="tablewrap short"><table><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody>
+      ${d.unchecked.map(r => `<tr><td>${r.side}</td><td>${esc(r.ref)}</td><td>${KIND_NAMES[r.kind] || esc(r.kind)}</td><td>${esc(r.value)}</td><td>${esc(r.reason)}</td></tr>`).join("")}</tbody></table></div>`
+      : `<p class="dim">${d.front.aligned || d.back.aligned ? "Every placed part could be checked." : "No side was lined up."}</p>`}
+    <h3>FILES</h3>
+    <div class="tablewrap short"><table><thead><tr><th>File</th><th>What</th><th>Size</th><th>Saved</th></tr></thead><tbody>
+      ${d.files.map(f => `<tr><td><a href="${fileUrl(uid, f.path, `?download=${encodeURIComponent(named(f).split("/").pop())}`)}">${esc(f.path)}</a>${named(f) !== f.path ? ` <span class="dim">${esc(named(f))}</span>` : ""}</td><td>${esc(f.kind)}${f.side ? " · " + f.side : ""}</td><td>${kb(f.bytes)}</td><td>${esc(f.modified.slice(0, 16))}</td></tr>`).join("")}</tbody></table></div>
+    <h3>LOG</h3>
+    <div class="list log">${d.log.map(e => `<div><span class="dim">${esc(e.at)}</span><span class="grow">${esc(e.what)}</span></div>`).join("") || `<div class="dim">Nothing logged.</div>`}</div>`;
+  $("#hd-save").addEventListener("click", async () => {
+    const r = await saveInfo(uid, { serial: $("#hd-serial").value, notes: $("#hd-notes").value });
+    if (!r) return;
+    if (isOpen) { S.project.serial = r.serial; S.project.notes = r.notes; }
+    say("Saved."); loadHistory();
+  });
 }
 
 // ---- start --------------------------------------------------------------------------------
