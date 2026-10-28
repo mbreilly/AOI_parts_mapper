@@ -125,7 +125,7 @@ const countAll = () => S.design.parts.length;
 // ---- 1 files -------------------------------------------------------------------------------
 function setupDrop(id, kind) {
   const lab = $(`#drop-${kind}`), input = $(`#file-${kind}`);
-  const send = f => act(() => upload(`/api/upload?kind=${kind}&name=${encodeURIComponent(f.name)}`, f), (S && S.messages && S.messages.join(" ")) || "");
+  const send = f => act(() => upload(`api/upload?kind=${kind}&name=${encodeURIComponent(f.name)}`, f), (S && S.messages && S.messages.join(" ")) || "");
   input.addEventListener("change", () => input.files[0] && send(input.files[0]).then(showMessages));
   lab.addEventListener("dragover", e => { e.preventDefault(); lab.classList.add("over"); });
   lab.addEventListener("dragleave", () => lab.classList.remove("over"));
@@ -175,7 +175,7 @@ async function loadRecent() {
   if (Date.now() - recentAt < 3000) return;      // render() runs often; the list rarely changes
   recentAt = Date.now();
   try {
-    const h = await api("/api/history?limit=6");
+    const h = await api("api/history?limit=6");
     $("#boards").innerHTML = h.projects.length ? h.projects.map(r => `<div class="${r.uid === h.current ? "cur" : ""}"><span class="grow">${esc(r.board)}${r.serial ? ` <span class="ok">${esc(r.serial)}</span>` : ""}<br><span class="dim">${esc(r.updated)} · ${sideBrief(r, "front")} · ${sideBrief(r, "back")}</span></span>${r.uid === h.current ? `<span class="dim">OPEN NOW</span>` : `<button data-reopen="${esc(r.uid)}">OPEN</button>`}</div>`).join("")
       : `<div class="dim">None yet. A project is saved as soon as its ODB++ and BOM are in.</div>`;
   } catch (e) { $("#boards").innerHTML = `<div class="dim">${esc(e.message)}</div>`; }
@@ -186,17 +186,17 @@ const sideBrief = (r, side) => {
   return s.aligned ? `${n} ${s.checkable}/${s.parts}` : s.photo ? `${n} photo` : `${n} –`;
 };
 function reopen(uid) {
-  return act(() => post(`/api/history/${encodeURIComponent(uid)}/open`, {}), "Reopened the project as it was left.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
+  return act(() => post(`api/history/${encodeURIComponent(uid)}/open`, {}), "Reopened the project as it was left.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
 }
 function newFrom(uid) {
-  return act(() => post(`/api/history/${encodeURIComponent(uid)}/new`, {}), "New project for another board of the same design. Its choices are carried over; take the photos.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
+  return act(() => post(`api/history/${encodeURIComponent(uid)}/new`, {}), "New project for another board of the same design. Its choices are carried over; take the photos.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
 }
 document.addEventListener("click", e => {
   const o = e.target.closest("[data-reopen]"); if (o) reopen(o.dataset.reopen);
   const n = e.target.closest("[data-newfrom]"); if (n) newFrom(n.dataset.newfrom);
 });
 async function saveInfo(uid, body) {
-  try { const d = await post(`/api/history/${encodeURIComponent(uid)}/info`, body); recentAt = 0; return d; }
+  try { const d = await post(`api/history/${encodeURIComponent(uid)}/info`, body); recentAt = 0; return d; }
   catch (e) { say(e.message, true); }
 }
 for (const id of ["#proj-serial", "#proj-notes"]) $(id).addEventListener("change", async () => {
@@ -206,10 +206,10 @@ for (const id of ["#proj-serial", "#proj-notes"]) $(id).addEventListener("change
   say("Saved with this project."); render();
 });
 $("#proj-new").addEventListener("click", () => S && S.project && newFrom(S.project.uid));
-$("#step").addEventListener("change", e => act(() => post("/api/option", { key: "step", value: e.target.value })));
+$("#step").addEventListener("change", e => act(() => post("api/option", { key: "step", value: e.target.value })));
 $("#columns").addEventListener("change", e => {
   const cols = {}; $$("#columns select").forEach(s => cols[s.dataset.col] = s.value === "" ? null : +s.value);
-  act(() => post("/api/columns", cols), "BOM columns updated.");
+  act(() => post("api/columns", cols), "BOM columns updated.");
 });
 
 // ---- 2 parts -------------------------------------------------------------------------------
@@ -234,7 +234,7 @@ function renderParts() {
     ? (votes["1"] || votes["-1"] ? `Auto picked ${S.design.rot_sign === -1 ? "clockwise" : "anticlockwise"} from the pin 1 positions (${votes["-1"]} part(s) say clockwise, ${votes["1"]} anticlockwise).`
       : "Auto: the design's pins can't tell, so the photo step shows a check if any part would look different.")
     : "Set by hand.";
-  if (!minpxKnob) minpxKnob = knob($("#knob-minpx"), S.profile.min_px, (v, end) => { if (end) act(() => post("/api/option", { key: "min_px", value: v })); });
+  if (!minpxKnob) minpxKnob = knob($("#knob-minpx"), S.profile.min_px, (v, end) => { if (end) act(() => post("api/option", { key: "min_px", value: v })); });
   else minpxKnob.set(S.profile.min_px);
   $("#use-tant").checked = !!S.profile.use_tantalums;
 }
@@ -245,17 +245,17 @@ $("#lines").addEventListener("change", e => {
   const key = tr.dataset.key, ch = {};
   if (e.target.matches("[data-kind]")) ch.kind = e.target.value;
   if (e.target.matches("[data-hidden]")) ch.hidden = e.target.value.trim();
-  act(() => post("/api/lines", { [key]: ch }));
+  act(() => post("api/lines", { [key]: ch }));
 });
 $("#markings").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
-  act(() => post("/api/option", { key: "marking", value: { kind: b.closest("[data-mark]").dataset.mark, end: b.dataset.end } })); });
-$("#rot-sign").addEventListener("click", e => { const b = e.target.closest("button"); if (b) act(() => post("/api/option", { key: "rot_sign", value: b.dataset.v })); });
-$("#use-tant").addEventListener("change", e => act(() => post("/api/option", { key: "use_tantalums", value: e.target.checked })));
+  act(() => post("api/option", { key: "marking", value: { kind: b.closest("[data-mark]").dataset.mark, end: b.dataset.end } })); });
+$("#rot-sign").addEventListener("click", e => { const b = e.target.closest("button"); if (b) act(() => post("api/option", { key: "rot_sign", value: b.dataset.v })); });
+$("#use-tant").addEventListener("change", e => act(() => post("api/option", { key: "use_tantalums", value: e.target.checked })));
 
 // ---- 3/4 a side: photo, fiducials, closeups ------------------------------------------------
 let ghostKnob = null, zoomKnob = null;
 async function loadAnchors(side) {
-  try { ui.anchors[side] = await api(`/api/side/${side}/anchors`); } catch (e) { say(e.message, true); }
+  try { ui.anchors[side] = await api(`api/side/${side}/anchors`); } catch (e) { say(e.message, true); }
   const st = S.sides[side];
   ui.pts[side] = { ...(st && st.points || {}) };
   ui.cur[side] = nextPrompt(side);
@@ -295,7 +295,7 @@ function renderSide(side) {
   const t = Date.now();
   if (hasPhoto && !live) {
     const aligned = cu ? cst.aligned : st.aligned;
-    const base = cu ? `/api/side/${side}/closeup/${cu.index}` : `/api/side/${side}`;
+    const base = cu ? `api/side/${side}/closeup/${cu.index}` : `api/side/${side}`;
     const src = aligned ? `${base}/map.jpg?w=1800&marks=${ui.marks ? 1 : 0}${ui.highlight && !cu ? "&highlight=" + encodeURIComponent(ui.highlight) : ""}` : `${base}/photo.jpg`;
     const key = src + "|" + (S._v || "") + "|" + (S._r || "");
     if (img.dataset.key !== key) { img.dataset.key = key; img.src = src + (src.includes("?") ? "&" : "?") + "t=" + t; }
@@ -303,7 +303,7 @@ function renderSide(side) {
   // ghost over the live camera: the last photo of this side, or the design drawn as it should lie
   ghost.hidden = !(live && ui.ghostOn);
   if (live && ui.ghostOn) {
-    const gsrc = cu ? "" : (st.photo ? `/api/side/${side}/photo.jpg` : `/api/side/${side}/ghost.svg?o=${o.join(",")}`);
+    const gsrc = cu ? "" : (st.photo ? `api/side/${side}/photo.jpg` : `api/side/${side}/ghost.svg?o=${o.join(",")}`);
     if (gsrc && ghost.dataset.src !== gsrc) { ghost.dataset.src = gsrc; ghost.src = gsrc + (gsrc.includes("?") ? "&" : "?") + "t=" + t; }
     ghost.hidden = !gsrc;
     ghost.style.opacity = ui.ghostOp / 100;
@@ -403,7 +403,7 @@ $("#photo").addEventListener("click", async e => {
   if (cu) cu.cur = n; else ui.cur[side] = n;
   renderSide(side);
   try {
-    const url = cu ? `/api/side/${side}/closeup/${cu.index}/snap` : `/api/side/${side}/snap`;
+    const url = cu ? `api/side/${side}/closeup/${cu.index}/snap` : `api/side/${side}/snap`;
     const sn = await post(url, { xy });
     if (pts[ref] === xy) { pts[ref] = sn.xy; drawMarks(side); }
   } catch (err) { /* keep the click as it was */ }
@@ -423,7 +423,7 @@ $("#clear-pts").addEventListener("click", () => {
 $("#auto-find").addEventListener("click", async () => {
   const side = tab;
   try {
-    const r = await post(`/api/side/${side}/auto`, {});
+    const r = await post(`api/side/${side}/auto`, {});
     if (!r.points) return say("The fiducials couldn't be found automatically. Click each one.", true);
     ui.pts[side] = r.points; ui.cur[side] = nextPrompt(side);
     say("Found the fiducials. Check each mark sits on its pad, then press Line up.");
@@ -432,19 +432,19 @@ $("#auto-find").addEventListener("click", async () => {
 });
 $("#do-align").addEventListener("click", () => {
   const side = tab, cu = ui.closeup;
-  if (cu) return act(() => post(`/api/side/${side}/closeup/${cu.index}/align`, { points: cu.pts }), "Closeup lined up.");
-  act(async () => { const s = await post(`/api/side/${side}/align`, { points: ui.pts[side] }); S = s; await loadRotation(side); return s; },
+  if (cu) return act(() => post(`api/side/${side}/closeup/${cu.index}/align`, { points: cu.pts }), "Closeup lined up.");
+  act(async () => { const s = await post(`api/side/${side}/align`, { points: ui.pts[side] }); S = s; await loadRotation(side); return s; },
     "Lined up. Coloured outlines can be checked; grey ones can't (see the list).");
 });
 async function loadRotation(side) {
-  try { ui.rot[side] = await api(`/api/side/${side}/rotation`); } catch (e) { ui.rot[side] = null; }
+  try { ui.rot[side] = await api(`api/side/${side}/rotation`); } catch (e) { ui.rot[side] = null; }
   if (tab === side) renderSide(side);
 }
-$("#rot-crops").addEventListener("click", e => { const b = e.target.closest("[data-sign]"); if (b) act(() => post("/api/option", { key: "rot_sign", value: +b.dataset.sign }), "Rotation direction set."); });
+$("#rot-crops").addEventListener("click", e => { const b = e.target.closest("[data-sign]"); if (b) act(() => post("api/option", { key: "rot_sign", value: +b.dataset.sign }), "Rotation direction set."); });
 $("#orient").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   const side = tab, v = b.dataset.o.split(",").map(Number);
-  act(async () => { const s = await post(`/api/side/${side}/orient`, { orient: v }); S = s; await loadAnchors(side); return S; });
+  act(async () => { const s = await post(`api/side/${side}/orient`, { orient: v }); S = s; await loadAnchors(side); return S; });
 });
 $("#tiles").addEventListener("click", e => {
   const b = e.target.closest("[data-tile]"); if (!b) return;
@@ -466,7 +466,7 @@ $("#side-parts").addEventListener("click", e => { const tr = e.target.closest("t
 const CANON = "canon";
 async function openCamera(want, video, liveImg, list) {
   let canon = { available: false };
-  try { canon = await api("/api/canon"); } catch (e) { /* older server */ }
+  try { canon = await api("api/canon"); } catch (e) { /* older server */ }
   let cam;
   // the Canon unless a webcam was chosen
   if (canon.available && (want === CANON || !want || !navigator.mediaDevices)) {
@@ -492,10 +492,10 @@ function canonStream(img) {
     img.onload = () => setTimeout(next, 150);       // about 5 frames a second keeps the Pi's CPU low
     img.onerror = async () => {
       if (!cam.on) return;
-      try { await api("/api/canon/preview.jpg"); } catch (e) { say(`Canon live view: ${e.message}`, true); }
+      try { await api("api/canon/preview.jpg"); } catch (e) { say(`Canon live view: ${e.message}`, true); }
       setTimeout(next, 2000);
     };
-    img.src = `/api/canon/preview.jpg?t=${Date.now()}`;
+    img.src = `api/canon/preview.jpg?t=${Date.now()}`;
   };
   next();
   return cam;
@@ -503,7 +503,7 @@ function canonStream(img) {
 async function grab(cam, video) {
   if (cam.canon) {
     say("Taking the photo on the Canon...");
-    const r = await fetch("/api/canon/capture", { method: "POST" });
+    const r = await fetch("api/canon/capture", { method: "POST" });
     if (!r.ok) { let m = `Error ${r.status}`; try { m = (await r.json()).error || m; } catch (e) { } throw new Error(m); }
     return await r.blob();
   }
@@ -524,14 +524,14 @@ async function startCamera() {
 }
 function stopCamera() { if (ui.stream) { ui.stream.stop(); ui.stream = null; } $("#live").hidden = true; }
 $("#cam-start").addEventListener("click", () => { if (ui.stream) { stopCamera(); renderSide(tab); } else startCamera(); });
-$("#cam-list").addEventListener("change", e => { stopCamera(); post("/api/option", { key: "camera", value: e.target.value }).then(s => { S = s; startCamera(); }); });
+$("#cam-list").addEventListener("change", e => { stopCamera(); post("api/option", { key: "camera", value: e.target.value }).then(s => { S = s; startCamera(); }); });
 $("#cam-take").addEventListener("click", async () => {
   try { const b = await grab(ui.stream, $("#video")); stopCamera(); sendPhoto(b); } catch (e) { say(e.message, true); }
 });
 $("#photo-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) sendPhoto(f); });
 function sendPhoto(blob) {
   const side = tab, cu = ui.closeup;
-  const url = cu ? `/api/side/${side}/closeup/${cu.index}/photo` : `/api/side/${side}/photo`;
+  const url = cu ? `api/side/${side}/closeup/${cu.index}/photo` : `api/side/${side}/photo`;
   act(async () => {
     const s = await upload(url, blob); S = s; S._v = Date.now();
     if (cu) { cu.pts = {}; cu.cur = 0; } else { ui.pts[side] = {}; ui.cur[side] = 0; ui.rot[side] = null; }
@@ -565,7 +565,7 @@ $("#map-ref").addEventListener("click", async () => {
   if (!S || !S.project) return;
   try {
     const on = !S.project.reference;
-    await post(`/api/history/${encodeURIComponent(S.project.uid)}/reference`, { on });
+    await post(`api/history/${encodeURIComponent(S.project.uid)}/reference`, { on });
     S.project.reference = on; recentAt = 0;
     say(on ? "This board is now the reference. Check other boards of this type on the Check a board tab." : "No longer the reference.");
     render();
@@ -583,11 +583,11 @@ function setHistKind(k, load = true) {
 }
 $("#hist-kind").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setHistKind(b.dataset.k); });
 const kb = n => n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} kB`;
-const fileUrl = (uid, path, extra = "") => `/api/history/${encodeURIComponent(uid)}/file/${path.split("/").map(encodeURIComponent).join("/")}${extra}`;
+const fileUrl = (uid, path, extra = "") => `api/history/${encodeURIComponent(uid)}/file/${path.split("/").map(encodeURIComponent).join("/")}${extra}`;
 async function loadHistory() {
   if (H.kind === "checks") return loadChecks();
   try {
-    const h = await api(`/api/history?limit=200&q=${encodeURIComponent(H.q)}`);
+    const h = await api(`api/history?limit=200&q=${encodeURIComponent(H.q)}`);
     H.list = h.projects;
     $("#hist-status").textContent = (h.source === "database" ? `${h.total} project(s) in the database.` : h.status) +
       (H.q ? ` ${h.projects.length} match.` : "");
@@ -605,7 +605,7 @@ $("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[d
 
 async function loadChecks() {
   try {
-    const h = await api(`/api/history/checks?limit=200&q=${encodeURIComponent(H.q)}`);
+    const h = await api(`api/history/checks?limit=200&q=${encodeURIComponent(H.q)}`);
     $("#hist-status").textContent = (h.source === "database" ? `${h.total} check(s) in the database.` : h.status) + (H.q ? ` ${h.checks.length} match.` : "");
     const flagged = r => { const n = r.front.flagged + r.back.flagged, w = r.front.wrong.length + r.back.wrong.length; return w ? `<span class="st-wrong">${w} wrong</span>` : n ? `${n} looked at` : "none"; };
     $("#hist-list tbody").innerHTML = h.checks.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
@@ -618,8 +618,8 @@ async function loadChecks() {
 }
 
 const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it" };
-const ckFile = (uid, side, name, extra = "") => `/api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
-const ckCrop = (uid, side, ref, which) => `/api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
+const ckFile = (uid, side, name, extra = "") => `api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
+const ckCrop = (uid, side, ref, which) => `api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
 function flaggedHtml(c, side, editable) {
   const st = c.sides[side] || {}, rs = (st.results || []).filter(r => r.status !== "ok");
   return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
@@ -637,7 +637,7 @@ async function showCheck(uid) {
   H.sel = uid;
   $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === uid));
   let c;
-  try { c = await api(`/api/check/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
+  try { c = await api(`api/check/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
   if (H.sel !== uid) return;
   const sides = Object.keys(c.sides);
   $("#hist-detail").innerHTML = `
@@ -659,7 +659,7 @@ async function showCheck(uid) {
 }
 document.addEventListener("click", e => {
   const o = e.target.closest("[data-ckopen]");
-  if (o) { post("/api/check/open", { uid: o.dataset.ckopen }).then(st => { CK.st = st; goTab("check"); }).catch(err => say(err.message, true)); }
+  if (o) { post("api/check/open", { uid: o.dataset.ckopen }).then(st => { CK.st = st; goTab("check"); }).catch(err => say(err.message, true)); }
   const pr = e.target.closest("[data-showproj]");
   if (pr) { e.preventDefault(); setHistKind("projects", false); H.sel = pr.dataset.showproj; loadHistory(); }
 });
@@ -668,7 +668,7 @@ async function showProject(uid) {
   H.sel = uid;
   $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === uid));
   let d;
-  try { d = await api(`/api/history/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
+  try { d = await api(`api/history/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
   if (H.sel !== uid) return;
   const isOpen = S && S.project && S.project.uid === uid;
   const sideLine = side => { const s = d[side]; return !s.parts ? "no polarised parts" : s.aligned ? `${s.checkable} of ${s.parts} checkable` : s.photo ? `${s.parts} polarised · photo not lined up` : `${s.parts} polarised · no photo`; };
@@ -717,7 +717,7 @@ async function showProject(uid) {
     <div class="list log">${d.log.map(e => `<div><span class="dim">${esc(e.at)}</span><span class="grow">${esc(e.what)}</span></div>`).join("") || `<div class="dim">Nothing logged.</div>`}</div>`;
   $("#hd-ref").addEventListener("click", async () => {
     try {
-      await post(`/api/history/${encodeURIComponent(uid)}/reference`, { on: !d.reference });
+      await post(`api/history/${encodeURIComponent(uid)}/reference`, { on: !d.reference });
       if (isOpen) S.project.reference = !d.reference;
       say(!d.reference ? "Now the reference for checking other boards of this type." : "No longer the reference.");
       loadHistory();
@@ -734,7 +734,7 @@ async function showProject(uid) {
 // ---- check a board --------------------------------------------------------------------------
 const CK = { st: null, side: "front", view: "result", stream: null, pts: {}, cur: 0, anchors: null, ghostOn: true };
 async function loadCheck() {
-  try { CK.st = await api("/api/check/state"); } catch (e) { say(e.message, true); }
+  try { CK.st = await api("api/check/state"); } catch (e) { say(e.message, true); }
   renderCheck();
 }
 function ckAct(fn, done) {
@@ -791,7 +791,7 @@ function renderCkViewer() {
   const ghost = $("#ck-ghost");
   ghost.hidden = !(live && CK.ghostOn && c);
   if (!ghost.hidden) {
-    const src = `/api/history/${encodeURIComponent(c.reference)}/file/${CK.side}/reference.jpg?thumb=1600`;
+    const src = `api/history/${encodeURIComponent(c.reference)}/file/${CK.side}/reference.jpg?thumb=1600`;
     if (!ghost.src.endsWith(src)) ghost.src = src;
   }
   const img = $("#ck-photo");
@@ -811,7 +811,7 @@ function renderCkViewer() {
 async function loadCkAnchors() {
   const key = `${CK.st.check.uid}/${CK.side}`;
   if (CK.anchors && CK.anchors.key === key) return renderCkPrompts();
-  try { CK.anchors = { key, ...(await api(`/api/check/side/${CK.side}/anchors`)) }; CK.pts = {}; CK.cur = 0; }
+  try { CK.anchors = { key, ...(await api(`api/check/side/${CK.side}/anchors`)) }; CK.pts = {}; CK.cur = 0; }
   catch (e) { CK.anchors = { key, prompts: [] }; $("#ck-prompts").innerHTML = `<div class="dim">${esc(e.message)}</div>`; return; }
   renderCkPrompts();
 }
@@ -833,24 +833,24 @@ $("#ck-photo").addEventListener("click", async e => {
   const img = e.target, b = img.getBoundingClientRect(), k = img.naturalWidth / b.width;
   const xy = [(e.clientX - b.left) * k, (e.clientY - b.top) * k];
   const p = CK.anchors.prompts[CK.cur]; if (!p) return;
-  try { const r = await post(`/api/check/side/${CK.side}/snap`, { xy }); CK.pts[p.ref] = r.xy; } catch (err) { CK.pts[p.ref] = xy; }
+  try { const r = await post(`api/check/side/${CK.side}/snap`, { xy }); CK.pts[p.ref] = r.xy; } catch (err) { CK.pts[p.ref] = xy; }
   CK.cur = Math.min(CK.cur + 1, CK.anchors.prompts.length - 1);
   if (Object.keys(CK.pts).length === CK.anchors.prompts.length) CK.cur = CK.anchors.prompts.length;
   renderCkPrompts();
 });
 $("#ck-clear").addEventListener("click", () => { CK.pts = {}; CK.cur = 0; renderCkPrompts(); });
-$("#ck-align").addEventListener("click", () => ckAct(() => post(`/api/check/side/${CK.side}/align`, { points: CK.pts }), "Lined up. Look at each flagged part."));
+$("#ck-align").addEventListener("click", () => ckAct(() => post(`api/check/side/${CK.side}/align`, { points: CK.pts }), "Lined up. Look at each flagged part."));
 $("#ck-sides").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.side = b.dataset.side; CK.view = "result"; renderCheck(); } });
 $("#ck-view").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.view = b.dataset.v; renderCkViewer(); } });
 $("#ck-flagged").addEventListener("click", e => {
   const b = e.target.closest("[data-ans]"); if (!b) return;
   const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === b.dataset.ref);
   const ans = cur && cur.answer === b.dataset.ans ? null : b.dataset.ans;
-  ckAct(() => post(`/api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans }));
+  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans }));
 });
-$("#ck-go").addEventListener("click", () => ckAct(() => post("/api/check/start", { reference: $("#ck-ref").value, serial: $("#ck-serial").value, notes: $("#ck-notes").value }),
+$("#ck-go").addEventListener("click", () => ckAct(() => post("api/check/start", { reference: $("#ck-ref").value, serial: $("#ck-serial").value, notes: $("#ck-notes").value }),
   "Check started. Take a photo of the board, lined up with the ghost.").then(() => { CK.side = Object.keys(CK.st.check ? CK.st.check.sides : { front: 1 })[0]; $("#ck-serial").value = ""; $("#ck-notes").value = ""; renderCheck(); }));
-$("#ck-new").addEventListener("click", () => { stopCk(); ckAct(() => post("/api/check/close", {})); });
+$("#ck-new").addEventListener("click", () => { stopCk(); ckAct(() => post("api/check/close", {})); });
 $("#ck-ghost-on").addEventListener("change", e => { CK.ghostOn = e.target.checked; renderCkViewer(); });
 async function startCk() {
   let want = null; try { want = localStorage.getItem("aoimap-ck-camera"); } catch (e) { }
@@ -865,7 +865,7 @@ $("#ck-cam-list").addEventListener("change", e => { try { localStorage.setItem("
 function sendCk(blob) {
   say("Lining up and checking every part...");
   CK.view = "result"; CK.anchors = null;
-  ckAct(() => upload(`/api/check/side/${CK.side}/photo`, blob)).then(() => {
+  ckAct(() => upload(`api/check/side/${CK.side}/photo`, blob)).then(() => {
     const s = CK.st.check && CK.st.check.sides[CK.side];
     if (s && s.aligned) say(s.message); else if (s) say(s.message + " Click the fiducials listed, in order.", true);
   });
@@ -876,5 +876,5 @@ $("#ck-cam-take").addEventListener("click", async () => {
 $("#ck-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) sendCk(f); });
 
 // ---- start --------------------------------------------------------------------------------
-act(() => api("/api/state")).then(() => { if (S && S.design) say(""); });
+act(() => api("api/state")).then(() => { if (S && S.design) say(""); });
 window.addEventListener("resize", () => (tab === "front" || tab === "back") && drawMarks(tab));
