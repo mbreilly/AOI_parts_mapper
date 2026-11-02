@@ -13,6 +13,8 @@ This file is shared, unchanged, by the AOI parts mapper and the PTC QC station.
 """
 
 import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -93,10 +95,17 @@ class Canon:
         if gp is None:
             raise CameraError("The gphoto2 Python package isn't installed (pip install gphoto2).")
         if self._cam is None:
+            if sys.platform == "darwin":   # macOS's ptpcamerad claims any PTP camera; it restarts when needed
+                subprocess.run(["killall", "ptpcamerad"], capture_output=True)
             cam = gp.Camera()
             try:
                 cam.init()
             except gp.GPhoto2Error as e:
+                if e.code in (gp.GP_ERROR_IO_USB_CLAIM, gp.GP_ERROR_MODEL_NOT_FOUND):
+                    # what libgphoto2 says when another program holds the camera
+                    raise CameraError(f"The camera is in use by another program ({e}). Only one program can use it at "
+                                      "a time: close live view in the other app (the AOI parts mapper or the PTC QC "
+                                      "station), wait 30 s, and try again.")
                 raise CameraError(f"The camera didn't answer ({e}). Check it's plugged in, switched on and not asleep.")
             self._cam = cam
             self._name = (self.detect_name(cam) or "Camera")
