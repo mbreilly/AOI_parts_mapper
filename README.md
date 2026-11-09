@@ -59,6 +59,14 @@ Options:
      pin 1 positions when the design allows it.
    - **Min part size:** a part narrower than this in a photo (14 px by default) can't be
      checked, and gets a closeup.
+   - **Add any part to the check:** type a ref (any part of the ODB++, whether the BOM lists it or
+     marks it polarised or not) and pick its kind; **Look only** is for parts with no polarity mark
+     (is it there, is it the right part). Added parts are kept in the board profile and listed with
+     **Train**, **Wait for photo** and **Remove**. The board's references are placed again with the
+     part straight away, from their saved alignment. **Train** picks any lined-up photo of that side
+     already taken (the reference, other mapped boards, past checks), shows the part on it, and
+     you answer **Good** or **Bad** (with why) to keep it as a learned example. **Wait for photo**
+     makes the next Check a board of that side ask about it ("new part, teach me") until answered.
 3. **Front and Back.**
    - Choose how the board lies. For the back, that's which way it was turned over: top to
      bottom, or left to right.
@@ -76,6 +84,12 @@ Options:
      like the other side.
    - **Rotation check:** if a part on the side would look different depending on the rotation
      direction, two closeups of it are shown, one drawn each way. Pick the one that fits.
+   - **Look at a part:** once lined up, click any part on the photo (or type its ref or value) to
+     see it beside the reference, with what the app makes of it: correct, wrong, not sure, or
+     skipped and why (too small, not in the check...). Answer **Good**, or **Bad** with a reason
+     (reversed, missing / not fitted, wrong part, damaged, misplaced / shifted, other) and a note;
+     it's kept as a learned example. A part the check skipped, or one not in the check at all, is
+     checked on later boards once it has been taught. The same box is on Check a board.
    - **Closeups for small parts:** the parts too small in the full photo are grouped into areas,
      each small enough that a photo of just that area shows them big enough.
      1. Take a closeup of each area.
@@ -108,7 +122,8 @@ This is a quick look before work starts on a board (say, before a repair), not a
   **Wrong**.
 - Every answer teaches the check, as on the PTC QC station. A flagged part answered **Right way
   round** is kept as a good example of that part (per board design and side), one answered **Wrong**
-  as a bad example with the note typed beside it. Later boards are compared with these as well as
+  as a bad example with the reason picked and the note typed beside it (a note is kept with either
+  answer). Later boards are compared with these as well as
   the reference: a part that looks like a good example isn't flagged again, and one that looks like
   a bad example is flagged as a **known fault** with that note. An example only counts when its
   polarity mark points the same way as the part's. Up to 20 of each are kept per part, the oldest
@@ -119,7 +134,11 @@ This is a quick look before work starts on a board (say, before a repair), not a
 - **History > Learned** (or **What the check has learned** on Check a board) lists the examples
   for each board design and side, with the image, good or bad, note, serial and date, and a
   **Delete** button, so you decide what the check is trained on. They are kept in the data folder
-  under `learned/<board>/<side>/` (examples.json and a JPEG for each).
+  under `learned/<board>/<side>/` (examples.json and a JPEG for each), and when a database is set up,
+  in `aoi_learned` (with the image, its SHA-256 and size), `aoi_learned_reference_wrong`,
+  `aoi_board_profiles` (the Parts tab's choices) and `aoi_board_extra` (parts added by hand, and
+  which wait for a photo). The files are the working copy; the database follows every change and
+  delete, and is filled from the files when the app starts.
 - The result is **FAIL** if any part is answered wrong, **PASS** once every flagged part is
   answered on at least one side, and **OPEN** until then. Parts the reference needed a closeup
   for, or that were too small or hidden, are listed to look at by eye.

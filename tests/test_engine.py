@@ -1,5 +1,6 @@
 """Engine tests on the made-up board in fixture.py. Run with  python -m pytest tests  or  python tests/test_engine.py"""
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -392,6 +393,120 @@ def test_learned_examples_kept_per_part_up_to_the_limit():
     assert ck.example_path(data, "B1", "front", ex[-1]["id"]).is_file()
 
 
+def test_add_any_part_to_the_check_and_references_follow():
+    from aoimap import check as ck, projects as pj
+    b = reference_board()
+    ref_uid = b.project["uid"]
+    # D7 is a TVS diode: in the BOM, but not polarised, so not in the check
+    assert not any(p["ref"] == "D7" for p in b.design["parts"])
+    b.set_extra("D7", "look")
+    d7 = next(p for p in b.design["parts"] if p["ref"] == "D7")
+    assert d7["kind"] == "look" and d7["extra"] and b.state()["extras"][0]["ref"] == "D7"
+    placed = {r["ref"]: r for r in pj._read_json(b.dir / "front" / "parts_full.json")}
+    assert placed["D7"]["checkable"] and "mark" not in placed["D7"]       # placed again without lining up again
+    # LEDs too small for the photo are left for a closeup, with no light-test excuse
+    assert placed["D1"]["reason"].startswith("too small") and "light" not in placed["D1"]["reason"]
+    # another board of the design open here: adding a part updates the reference too
+    b.new_from(ref_uid)
+    assert "D7" in b.profile["extra"]
+    b.set_extra("R1", "look")
+    ref_parts = {r["ref"] for r in pj._read_json(pj.folder(b.data, ref_uid) / "front" / "parts_full.json")}
+    assert {"D7", "R1"} <= ref_parts
+    assert "R1" in pj._read_json(pj.folder(b.data, ref_uid) / "profile.json")["extra"]
+    b.set_extra("R1", remove=True)
+    assert "R1" not in {r["ref"] for r in pj._read_json(pj.folder(b.data, ref_uid) / "front" / "parts_full.json")}
+    try:
+        b.set_extra("NOPE1", "look"); raise AssertionError("unknown ref")
+    except ValueError:
+        pass
+    # kept for the next board loaded from the files
+    b2 = Board(b.data)
+    b2.add_file("odb", ODB.name, ODB.read_bytes())
+    b2.add_file("bom", BOM.name, BOM.read_bytes())
+    assert list(b2.profile["extra"]) == ["D7"] and any(p["ref"] == "D7" for p in b2.design["parts"])
+    # a check of another board covers it, by its look
+    c = ck.Checks(b.data)
+    c.start(ref_uid)
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["D7"]["status"] == "ok", res["D7"]
+
+
+def test_teach_a_part_on_a_photo_already_taken():
+    from aoimap import check as ck, teach as tl
+    b = reference_board()
+    ref_uid, board = b.project["uid"], b.project["board"]
+    c = ck.Checks(b.data)
+    c.start(ref_uid, "SN-T1")
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+    src = f"check/{c.cur['uid']}/front"
+    assert [s["id"] for s in tl.sources(b.data, board, "front")] == [f"project/{ref_uid}/front", src]
+    # any part can be looked at: one not in the check is skipped, with why
+    info = tl.inspect(b.data, src, "R2")
+    assert info["verdict"] == "skipped" and not info["in_check"] and "not in the check" in info["why"], info
+    assert tl.crop(b.data, src, "R2", "board")[:2] == b"\xff\xd8" and tl.crop(b.data, src, "R2", "reference")[:2] == b"\xff\xd8"
+    assert tl.inspect(b.data, src, "C3")["verdict"] == "correct"
+    assert tl.inspect(b.data, f"project/{ref_uid}/front", "C3")["verdict"] == "reference"
+    # clicking on a part picks it
+    img = cv2.imread(str(ck.folder(b.data, c.cur["uid"]) / "front" / "aligned.jpg"))
+    r = next(r for r in pj_parts(b, "front") if r["ref"] == "U1")
+    cx, cy = r["centre"]
+    assert tl.pick(b.data, src, cx / img.shape[1], cy / img.shape[0])["ref"] == "U1"
+    # taught BAD, with a reason: kept as an example, and R2 joins the check
+    b.teach(src, "R2", "bad", "missing", "not fitted on this one")
+    ex = ck.load_examples(b.data, board, "front")["examples"]
+    assert [(e["ref"], e["label"], e["reason"], e["note"], e["serial"]) for e in ex] == [("R2", "bad", "missing", "not fitted on this one", "SN-T1")]
+    assert b.profile["extra"]["R2"]["kind"] == "look" and tl.inspect(b.data, src, "R2")["in_check"]
+    assert c.cur["sides"]["front"]["results"] == ck.load(b.data, c.cur["uid"])["sides"]["front"]["results"]   # the check isn't answered
+    # a part too small for the full photo (an LED) is checked once taught, here from the reference photo
+    b.teach(f"project/{ref_uid}/front", "D1", "good", note="green mark at pin 1")
+    assert [e["note"] for e in ck.load_examples(b.data, board, "front")["examples"] if e["ref"] == "D1"] == ["green mark at pin 1"]
+    c.start(ref_uid, "SN-T2")
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=2, ppi=290)))[1].tobytes())
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert "D1" in res and "D2" not in res and "R2" in res
+    assert "D2" in {k["ref"] for k in c.cur["sides"]["front"]["skipped"]}
+
+
+def pj_parts(b, side):
+    from aoimap import projects as pj
+    return pj._read_json(b.dir / side / "parts_full.json")
+
+
+def test_part_waiting_for_a_new_photo_is_asked_until_answered():
+    from aoimap import check as ck
+    b = reference_board()
+    ref_uid, board = b.project["uid"], b.project["board"]
+    b.set_extra("D7", "look", wait=True)
+    assert ck.pending_refs(b.data, board, "front") == {"D7"}
+    c = ck.Checks(b.data)
+    shot = lambda: cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes()
+    c.start(ref_uid, "SN-W1")
+    c.photo("front", shot())
+    d7 = next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "D7")
+    assert d7["status"] == "check" and d7["new"] and "teach me" in d7["why"] and c.cur["result"] == "OPEN"
+    c.start(ref_uid, "SN-W2")                       # not answered: asked again
+    c.photo("front", shot())
+    assert next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "D7").get("new")
+    # answered right way round, with a note: the note is kept with the good example
+    c.answer("front", "D7", "correct", "looks fine")
+    ex = [e for e in ck.load_examples(b.data, board, "front")["examples"] if e["ref"] == "D7"]
+    assert [(e["label"], e["note"]) for e in ex] == [("good", "looks fine")]
+    r = next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "D7")
+    assert r["note"] == "looks fine"
+    c.answer("front", "D7", "correct", "looks fine, checked twice")     # the note changes on its own
+    assert [e["note"] for e in ck.load_examples(b.data, board, "front")["examples"] if e["ref"] == "D7"] == ["looks fine, checked twice"]
+    assert not ck.pending_refs(b.data, board, "front")
+    c.start(ref_uid, "SN-W3")
+    c.photo("front", shot())
+    d7 = next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "D7")
+    assert not d7.get("new") and d7["status"] == "ok", d7
+    # a wrong answer keeps its reason, and a known fault says it
+    c.answer("front", "C5", "wrong", "", missed=True, reason="reversed")
+    e = next(e for e in ck.load_examples(b.data, board, "front")["examples"] if e["ref"] == "C5")
+    assert e["reason"] == "reversed"
+
+
 def test_database_history():
     """Needs a MariaDB login: AOIMAP_TEST_DB=path/to/option-file (a throwaway database)."""
     import os
@@ -447,6 +562,42 @@ def test_database_history():
     n = h._run(lambda c: (c.execute("SELECT COUNT(*) AS n FROM aoi_check_parts p JOIN aoi_checks k ON k.id=p.check_id WHERE k.uid=%s AND p.answer='wrong'", (ch.cur["uid"],)), c.fetchone()["n"])[1])
     assert n == 1
     assert h3.search_checks("DBCHK")["checks"][0]["result"] == "FAIL"
+    # what the check learns, the parts added by hand and the board's choices are kept in the database too
+    from aoimap import check as ck
+    ck.LEARNED_LISTENERS.append(h.changed_learned)
+    b.on_profile = h.changed_profile
+    try:
+        board = b.project["board"]
+        b.set_extra("D7", "look", wait=True)
+        cnt = lambda: h._run(lambda c: (c.execute("SELECT COUNT(*) AS n FROM aoi_learned WHERE board=%s", (board,)), c.fetchone()["n"])[1])
+        for _ in range(100):
+            h.flush()
+            if cnt() == 1:
+                break
+            time.sleep(0.1)
+        row = h._run(lambda c: (c.execute("SELECT * FROM aoi_learned WHERE board=%s", (board,)), c.fetchone())[1])
+        img = (ck.learned_dir(b.data, board, "front") / row["file"]).read_bytes()
+        assert row["ref"] == "C3" and row["label"] == "bad" and row["image"] == img and row["bytes"] == len(img)
+        import hashlib
+        assert row["sha256"] == hashlib.sha256(img).hexdigest()
+        ex = h._run(lambda c: (c.execute("SELECT ref, kind, wait_for_photo FROM aoi_board_extra WHERE board=%s", (board,)), c.fetchall())[1])
+        assert [(e["ref"], e["kind"], e["wait_for_photo"]) for e in ex] == [("D7", "look", 1)]
+        prof = h._run(lambda c: (c.execute("SELECT profile FROM aoi_board_profiles WHERE board=%s", (board,)), c.fetchone())[1])
+        assert "D7" in json.loads(prof["profile"])["extra"]
+        # deleting an example deletes it from the database; a fresh start backfills from the folders
+        ch.answer("front", "C3", None)
+        h.flush()
+        assert cnt() == 0
+        ch.answer("front", "C3", "wrong", reason="reversed")
+        h._run(lambda c: c.execute("DELETE FROM aoi_learned WHERE board=%s", (board,)))
+        h._dirty.clear()
+        h.catch_up()
+        assert cnt() == 1
+        assert h._run(lambda c: (c.execute("SELECT reason FROM aoi_learned WHERE board=%s", (board,)), c.fetchone()["reason"])[1]) == "reversed"
+    finally:
+        ck.LEARNED_LISTENERS.remove(h.changed_learned)
+        for t in ("aoi_learned", "aoi_board_extra", "aoi_board_profiles", "aoi_learned_reference_wrong"):
+            h._run(lambda c: c.execute(f"DELETE FROM {t} WHERE board=%s", (b.project["board"],)))
     h._run(lambda c: c.execute("DELETE FROM aoi_checks WHERE uid=%s", (ch.cur["uid"],)))
     h._run(lambda c: c.execute("DELETE FROM aoi_projects WHERE uid=%s", (first,)))
 

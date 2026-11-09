@@ -76,10 +76,23 @@ def pin1_direction(p: dict) -> str:
     return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((a + 22.5) // 45) % 8]
 
 
+def _part(c, kind: str, line: dict, hidden=None, key=""):
+    pin1, how = pin1_of(c.pins)
+    other = None
+    if len(c.pins) == 2 and pin1:
+        other = next(v for v in c.pins.values() if v is not pin1)
+    return {"ref": c.ref, "side": c.side, "x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror,
+            "package": c.package, "bbox": c.bbox, "pin1": pin1, "pin1_how": how, "other_pin": other,
+            "pins": len(c.pins), "kind": kind, "value": line.get("value", ""), "description": line.get("description", ""),
+            "hidden": hidden, "key": key}
+
+
 def build(odb: OdbDesign, bom: dict, profile: dict) -> dict:
-    """The parts map. profile holds the user's choices: kinds and hidden by BOM line key."""
+    """The parts map. profile holds the user's choices: kinds and hidden by BOM line key, and parts
+    added by hand by reference ("extra": {ref: {"kind"}}), which may not be in the BOM at all."""
     kinds = profile.get("kinds", {})
     hidden = profile.get("hidden", {})
+    extra = profile.get("extra", {}) or {}
     odb_by_ref = {p.ref: p for p in odb.parts}
     parts = []
     for line in bom["lines"]:
@@ -91,17 +104,17 @@ def build(odb: OdbDesign, bom: dict, profile: dict) -> dict:
             continue
         for ref in line["refs"]:
             c = odb_by_ref.get(ref)
-            if not c:
-                continue
-            pin1, how = pin1_of(c.pins)
-            other = None
-            if len(c.pins) == 2 and pin1:
-                other = next(v for v in c.pins.values() if v is not pin1)
-            p = {"ref": ref, "side": c.side, "x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror,
-                 "package": c.package, "bbox": c.bbox, "pin1": pin1, "pin1_how": how, "other_pin": other,
-                 "pins": len(c.pins), "kind": kind, "value": line["value"], "description": line["description"],
-                 "hidden": hidden.get(key), "key": key}
-            parts.append(p)
+            if c and ref not in extra:
+                parts.append(_part(c, kind, line, hidden.get(key), key))
+    # parts added by hand: their own kind wins over the BOM line's
+    for ref, e in extra.items():
+        c = odb_by_ref.get(ref)
+        if not c:
+            continue
+        line = bom["lines"][bom["parts"][ref]] if ref in bom["parts"] else {"value": c.package, "description": ""}
+        p = _part(c, e.get("kind") or "look", line, None, "+" + ref)
+        p["extra"] = True
+        parts.append(p)
     rot_sign = profile.get("rot_sign")
     ev = rotation_evidence(parts)
     if rot_sign is None:
@@ -125,6 +138,24 @@ def build(odb: OdbDesign, bom: dict, profile: dict) -> dict:
     }
 
 
+def components(odb: OdbDesign, bom: dict, design: dict) -> list[dict]:
+    """Every part in the ODB++ (not fiducials), to pick one to add to the check by hand."""
+    in_check = {p["ref"]: p for p in design["parts"]}
+    out = []
+    for c in odb.parts:
+        if c.ref in odb.fiducials:
+            continue
+        line = bom["lines"][bom["parts"][c.ref]] if c.ref in bom["parts"] else None
+        p = in_check.get(c.ref)
+        out.append({"ref": c.ref, "side": c.side, "x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror, "bbox": c.bbox,
+                    "package": c.package, "in_bom": bool(line),
+                    "dnp": c.ref in bom["dnp"], "value": line["value"] if line else "",
+                    "description": line["description"] if line else "",
+                    "kind": p["kind"] if p else None, "extra": bool(p and p.get("extra"))})
+    out.sort(key=lambda r: re.sub(r"\d+", lambda m: m.group().zfill(6), r["ref"]))
+    return out
+
+
 def counts(parts):
     out = {}
     for p in parts:
@@ -136,7 +167,7 @@ def counts(parts):
 def marking(p: dict, markings: dict) -> dict | None:
     """Where the polarity mark should be, in board units: for two-pin parts the end that's banded,
     for ICs the pin 1 corner. None when the design doesn't say."""
-    if not p.get("pin1"):
+    if not p.get("pin1") or p["kind"] == "look":
         return None
     if p["kind"] in ("ic", "other") or not p.get("other_pin"):
         return {"type": "dot", "at": p["pin1"]}

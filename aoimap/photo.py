@@ -23,7 +23,7 @@ CORNERS = ["top-left", "top-right", "bottom-right", "bottom-left"]
 
 KIND_COLOURS = {   # BGR
     "ic": (0, 165, 255), "tantalum": (255, 0, 255), "electrolytic": (255, 255, 0),
-    "diode": (60, 60, 255), "led": (80, 230, 80), "other": (230, 230, 230),
+    "diode": (60, 60, 255), "led": (80, 230, 80), "other": (230, 230, 230), "look": (255, 160, 60),
 }
 GREY = (150, 150, 150)
 
@@ -292,8 +292,6 @@ def place(design: dict, side: str, img_shape, mapping: Mapping, min_px: float, r
         elif px < min_px:
             need = min_px / max(px, 0.1)
             reason = f"too small: {px:.0f} px across, needs {min_px:.0f} px ({need:.1f}x closer)"
-            if p["kind"] == "led":
-                reason += "; a reversed LED won't light, so a light test also catches it"
         elif p["kind"] == "ic" and p["pin1_how"] != "named":
             rec["note"] = "pin 1 not named in the design" + (" (lowest pin used)" if p["pin1_how"] == "guess" else "")
         rec["checkable"] = reason is None

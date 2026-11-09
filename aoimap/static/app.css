@@ -144,3 +144,16 @@ td.no { color: var(--dimInk); opacity: .7; }
   text-align: center; font-size: 13px; line-height: 20px; }
 .knob.small .kv2 { width: 56px; font-size: 11px; height: 18px; line-height: 18px; }
 @media (max-width: 900px) { .cols { flex-direction: column; } .col + .col { border-left: 0; border-top: 1px solid var(--panelEdge); } .sidecol { max-height: none; } }
+.ex a { color: var(--accent); text-decoration: none; }
+.ex a:hover { text-decoration: underline; }
+.insp { border: 1px solid var(--panelEdge); border-radius: 4px; padding: 8px; margin: 8px 0; background: color-mix(in srgb, var(--panelEdge) 35%, transparent); }
+.insp .pics { display: flex; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+.insp figure { margin: 0; font-size: 11px; text-align: center; color: var(--dimInk); max-width: 170px; }
+.insp img { display: block; width: 170px; height: 170px; object-fit: contain; background: var(--panelEdge); border-radius: 3px; }
+.insp input.note { flex: 1; min-width: 140px; }
+.insp button.wrongbtn.on { background: #C0392B; color: #fff; }
+.verdict { font-weight: 700; font-size: 12px; padding: 3px 8px; border-radius: 3px; background: var(--buttonOff); }
+.verdict.v-correct { background: #3E8E41; color: #fff; }
+.verdict.v-wrong { background: #C0392B; color: #fff; }
+.verdict.v-unsure { background: var(--accent); color: var(--panelEdge); }
+.verdict.v-reference { background: var(--screw); color: var(--panelEdge); }

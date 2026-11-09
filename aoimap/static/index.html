@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AOI Parts Mapper</title>
-<link rel="stylesheet" href="static/app.css?v=learn1">
+<link rel="stylesheet" href="static/app.css?v=teach1">
 </head>
 <body>
 <div class="panel">
@@ -80,6 +80,20 @@
         <div class="tablewrap"><table id="lines"><thead><tr>
           <th>Value</th><th>Description</th><th>Parts</th><th>Kind</th><th>Hidden because</th></tr></thead>
           <tbody></tbody></table></div>
+        <h2>ADD ANY PART TO THE CHECK</h2>
+        <p class="dim">Any part of the design, whether the BOM lists it or marks it polarised or not. Pick its kind: <b>Look only</b>
+          is for parts with no polarity mark (is it there, is it the right part). Kept for the next board of this design, and the
+          reference is updated straight away. You can also click any part on the Front or Back photo to look at it and teach it.</p>
+        <div class="row"><input id="xp-ref" list="dl-parts" placeholder="Ref, e.g. R12" autocomplete="off">
+          <select id="xp-kind"></select><button id="xp-add" class="accent">ADD</button></div>
+        <div id="xp-list" class="list"></div>
+        <div id="xp-train" hidden>
+          <h3 id="xp-train-title">TEACH IT</h3>
+          <p class="dim">Train it now on a photo already taken (pick one, then answer GOOD or BAD), or press <b>Wait for a new photo</b>:
+            the next Check a board of that side asks about it until it's answered.</p>
+          <div class="row"><select id="xp-src"></select><button id="xp-wait">WAIT FOR A NEW PHOTO</button><button id="xp-close">CLOSE</button></div>
+          <div id="xp-insp"></div>
+        </div>
       </div>
       <div class="col">
         <h2>MARKINGS</h2>
@@ -155,6 +169,15 @@
           <p class="dim">These parts are too small in the full photo. Take a closer photo of each area, then click the
             points listed to line it up.</p>
           <div id="tiles" class="list"></div>
+        </div>
+
+        <div id="look-box" hidden>
+          <h3>LOOK AT A PART</h3>
+          <p class="dim">Any part of the design: type its ref or value, or click it on the photo. See what the app makes of it, and tell
+            it if it's GOOD or BAD; that's kept as a learned example, and a part it skipped is checked on later boards.</p>
+          <div class="row"><input id="look-ref" list="dl-parts" placeholder="Ref or value" autocomplete="off"><button id="look-go">LOOK</button>
+            <label class="check"><input type="checkbox" id="look-pick" checked> Click the photo to pick a part</label></div>
+          <div id="look-insp"></div>
         </div>
 
         <div id="parts-box" hidden>
@@ -236,12 +259,18 @@
             <div id="ck-prompts" class="list"></div>
             <div class="row"><button id="ck-clear">CLEAR</button><button id="ck-align" class="accent">LINE UP</button></div>
           </div>
+          <div id="ck-look" hidden>
+            <h3>LOOK AT ANY PART</h3>
+            <div class="row"><input id="ck-look-ref" list="dl-parts" placeholder="Ref or value (or click it on the result photo)" autocomplete="off">
+              <button id="ck-look-go">LOOK</button></div>
+            <div id="ck-insp"></div>
+          </div>
           <div id="ck-flagged"></div>
           <div id="ck-ok"></div>
           <div class="row"><button id="ck-new">CHECK ANOTHER BOARD</button><button data-goto="history" data-hist="checks">PAST CHECKS</button>
             <button id="ck-learned">WHAT THE CHECK HAS LEARNED</button></div>
           <p class="dim">Every answer teaches the check: Right way round keeps that part as a good example, Wrong as a bad one with
-            your note. Next time a part like a good example isn't flagged, and one like a bad example is flagged as a known fault.</p>
+            its reason and your note. Next time a part like a good example isn't flagged, and one like a bad example is flagged as a known fault.</p>
         </div>
       </div>
     </div>
@@ -264,6 +293,7 @@
   </section>
   <i class="screw bl"></i><i class="screw br"></i>
 </div>
-<script src="static/app.js?v=learn1"></script>
+<datalist id="dl-parts"></datalist>
+<script src="static/app.js?v=teach1"></script>
 </body>
 </html>

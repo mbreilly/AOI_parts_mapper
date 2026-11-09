@@ -43,6 +43,13 @@ LEARNED_MARGIN = 0.03       # a learned example must match this much better than
 MAX_EXAMPLES = 20           # learned examples of each kind (good, bad) kept for each part; the oldest go first
 # These come from the PTC station's photos; tune them on real boards.
 
+# why a part is wrong, as the tester picks it
+REASONS = {"reversed": "Reversed", "missing": "Missing / not fitted", "wrong_part": "Wrong part", "damaged": "Damaged",
+           "shifted": "Misplaced / shifted", "other": "Other"}
+
+# called with (board, side) whenever a side's learned examples change (the database copy follows)
+LEARNED_LISTENERS = []
+
 STATUS_COLOURS = {"ok": (80, 190, 80), "reversed": (60, 60, 230), "rotated": (60, 60, 230), "check": (40, 170, 240),
                   "fault": (60, 60, 230)}   # fault: looks like a learned bad example (a known fault)
 
@@ -132,6 +139,8 @@ def load_examples(data: Path, board: str, side: str) -> dict:
 def _save_examples(data: Path, board: str, side: str, d: dict):
     learned_dir(data, board, side).mkdir(parents=True, exist_ok=True)
     pj._write_json(learned_dir(data, board, side) / "examples.json", {"board": board, **d})
+    for fn in LEARNED_LISTENERS:
+        fn(board, side)
 
 
 def example_path(data: Path, board: str, side: str, ex_id: str) -> Path:
@@ -143,8 +152,9 @@ def example_path(data: Path, board: str, side: str, ex_id: str) -> Path:
 
 
 def add_example(data: Path, board: str, side: str, aligned, box, ref: str, label: str, note: str = "",
-                serial: str = "", check: str = "") -> str | None:
-    """Keeps an area of a lined-up photo as a good or bad example of a part. Its id, or None."""
+                serial: str = "", check: str = "", reason: str = "", source: str = "") -> str | None:
+    """Keeps an area of a lined-up photo as a good or bad example of a part. Its id, or None.
+    reason: why a bad one is wrong (a REASONS key); source: the photo it came from."""
     x, y, w, h = (int(v) for v in box)
     crop = aligned[max(0, y):y + h, max(0, x):x + w]
     if crop.size == 0:
@@ -153,8 +163,9 @@ def add_example(data: Path, board: str, side: str, aligned, box, ref: str, label
     ex_id = f"{pj.slug(ref)}-{label}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
     learned_dir(data, board, side).mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(learned_dir(data, board, side) / f"{ex_id}.jpg"), crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
-    d["examples"].append({"id": ex_id, "ref": ref, "label": label, "note": note.strip()[:500], "serial": serial,
-                          "check": check, "date": pj.now()[:16], "file": f"{ex_id}.jpg"})
+    d["examples"].append({"id": ex_id, "ref": ref, "label": label, "note": (note or "").strip()[:500], "serial": serial,
+                          "check": check, "date": pj.now()[:16], "file": f"{ex_id}.jpg",
+                          "reason": reason if label == "bad" and reason in REASONS else "", "source": source})
     same = [e for e in d["examples"] if e["ref"] == ref and e["label"] == label]
     for old in same[:-MAX_EXAMPLES]:
         _drop(data, board, side, d, old["id"])
@@ -176,11 +187,13 @@ def delete_example(data: Path, board: str, side: str, ex_id: str):
         _save_examples(data, board, side, d)
 
 
-def set_note(data: Path, board: str, side: str, ex_id: str, note: str):
+def set_note(data: Path, board: str, side: str, ex_id: str, note: str, reason: str | None = None):
     d = load_examples(data, board, side)
     ex = next((e for e in d["examples"] if e["id"] == ex_id), None)
     if ex:
         ex["note"] = note.strip()[:500]
+        if reason is not None:
+            ex["reason"] = reason if ex["label"] == "bad" and reason in REASONS else ""
         _save_examples(data, board, side, d)
 
 
@@ -193,6 +206,33 @@ def set_reference_wrong(data: Path, board: str, side: str, reference: str, ref: 
     else:
         d["reference_wrong"].pop(reference, None)
     _save_examples(data, board, side, d)
+
+
+def taught_refs(data: Path, board: str, side: str) -> set:
+    """Parts with at least one learned example on this side."""
+    return {e["ref"] for e in load_examples(data, board, side)["examples"]}
+
+
+def board_profile(data: Path, board: str) -> dict:
+    return pj._read_json(Path(data) / "boards" / pj.slug(board) / "profile.json", {}) or {}
+
+
+def pending_refs(data: Path, board: str, side: str) -> set:
+    """Parts added by hand to wait for a new photo, not yet taught on this side. Which side a part is
+    on isn't known here, so a ref on the other side is simply never found among this side's parts."""
+    extra = board_profile(data, board).get("extra") or {}
+    return {r for r, e in extra.items() if e.get("wait")} - taught_refs(data, board, side)
+
+
+def reason_text(ex: dict) -> str:
+    return REASONS.get(ex.get("reason") or "", "")
+
+
+def box_round(box):
+    """A part's box with some board round it, as check_part compares it."""
+    x, y, w, h = (int(round(v)) for v in box)
+    e = max(3, int(0.3 * min(w, h)))
+    return [max(0, x - e), max(0, y - e), w + 2 * e, h + 2 * e]
 
 
 def example_images(data: Path, board: str, side: str) -> dict:
@@ -327,7 +367,10 @@ def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = Non
                 v = _ncc(patch, q)
                 if v > best_quarter:
                     best_turn, best_quarter = t, v
-    if best_quarter > max(same, rev) + REVERSE_MARGIN:
+    if part["kind"] == "look":    # no polarity mark: only whether it looks like the reference part
+        out.update(mark=0.0, status="ok" if max(same, rev) >= MIN_MATCH else "check",
+                   why="" if max(same, rev) >= MIN_MATCH else "doesn't look like the reference part: missing, a different part, or out of place")
+    elif best_quarter > max(same, rev) + REVERSE_MARGIN:
         out.update(status="rotated", turn=best_turn, turned=round(best_quarter, 3), why=f"looks turned {best_turn}°")
     elif max(same, rev) < MIN_MATCH:
         out.update(status="check", why="doesn't look like the reference part: missing, a different part, or out of place")
@@ -350,7 +393,8 @@ def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = Non
     best_bad, bad_ex = max(bad, key=lambda v: v[0]) if bad else (-1.0, None)
     if best_bad >= MIN_MATCH and best_bad > best_good + LEARNED_MARGIN:
         seen = " ".join(v for v in (bad_ex.get("serial"), bad_ex.get("date", "")[:10]) if v)
-        out.update(status="fault", learned="bad", why=f"looks like a fault seen before ({seen})" + (f": {bad_ex['note']}" if bad_ex["note"] else ""))
+        said = ": ".join(v for v in (reason_text(bad_ex), bad_ex.get("note", "")) if v)
+        out.update(status="fault", learned="bad", why=f"looks like a fault seen before ({seen})" + (f": {said}" if said else ""))
     elif out["status"] != "ok" and good:
         g, ex = max(good, key=lambda v: v[0])
         if g >= MIN_MATCH and g > best_bad + LEARNED_MARGIN:
@@ -471,13 +515,17 @@ class Checks:
             self._img[key] = cv2.imread(str(d / side / "reference.jpg"))
         return self._img[key]
 
-    def _ref_parts(self, side):
+    def _ref_parts(self, side, taught=frozenset()):
+        """The reference's parts this side checks, and those it skips. A part a tester has taught
+        (or one added to wait for a photo) is checked even when it's small in the photo."""
         d = pj.folder(self.data, self.cur["reference"])
         placed = pj._read_json(d / side / "parts_full.json", [])
-        use = [r for r in placed if r.get("checkable") and "via" not in r]
+        small = lambda r: "via" in r or (r.get("reason") or "").startswith("too small")
+        ok = lambda r: (r.get("checkable") and "via" not in r) or (r["ref"] in taught and small(r))
+        use = [r for r in placed if ok(r)]
         skipped = [{"ref": r["ref"], "kind": r.get("kind", ""), "why": "needs a closeup; look at it by eye" if "via" in r
                     else r.get("reason") or "can't be checked from the photo"}
-                   for r in placed if not (r.get("checkable") and "via" not in r)]
+                   for r in placed if not ok(r)]
         return use, skipped
 
     def photo(self, side, data: bytes):
@@ -560,13 +608,19 @@ class Checks:
         st = self.cur["sides"][side]
         ref = self._ref(side)
         aligned = cv2.warpPerspective(self._photo(side), np.asarray(H, np.float64), (ref.shape[1], ref.shape[0]))
-        parts, skipped = self._ref_parts(side)
+        board = self.cur["board"]
+        pending = pending_refs(self.data, board, side)
+        parts, skipped = self._ref_parts(side, taught_refs(self.data, board, side) | pending)
         margin = max(8, int(0.004 * ref.shape[1]))
-        learned = example_images(self.data, self.cur["board"], side)
-        wrong = set(load_examples(self.data, self.cur["board"], side)["reference_wrong"].get(self.cur["reference"], []))
+        learned = example_images(self.data, board, side)
+        wrong = set(load_examples(self.data, board, side)["reference_wrong"].get(self.cur["reference"], []))
         results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong) for p in parts]
-        if results and np.median([max(r["score"], r["turned"]) for r in results]) < 0.45 and not (force and len(results) < 3):
+        usual = [r for r in results if r["ref"] not in pending]
+        if usual and np.median([max(r["score"], r["turned"]) for r in usual]) < 0.45 and not (force and len(usual) < 3):
             return False
+        for r in results:
+            if r["ref"] in pending:      # added by hand to wait for a photo: always asked until taught
+                r.update(status="check", new=True, why="new part, teach me: is it right?")
         d = folder(self.data, self.cur["uid"]) / side
         cv2.imwrite(str(d / "aligned.jpg"), aligned, [cv2.IMWRITE_JPEG_QUALITY, 92])
         self._img[(self.cur["uid"], side, "aligned")] = aligned
@@ -577,7 +631,7 @@ class Checks:
                     + (f"{len(flagged)} flagged ({', '.join(flagged[:12])}{' ...' if len(flagged) > 12 else ''})" if flagged else "none flagged"))
         return True
 
-    def answer(self, side, ref, answer, note=None, missed=False):
+    def answer(self, side, ref, answer, note=None, missed=False, reason=None):
         """The tester's answer for a part, which also teaches the check (see learned examples). A
         part the check passed can be answered wrong: it missed it. A changed or cleared answer
         forgets the example the old one made."""
@@ -589,29 +643,30 @@ class Checks:
             raise ValueError(f"{ref} isn't checked on this side.")
         answer = answer or None
         c, board = self.cur, self.cur["board"]
-        if r["status"] == "ok" and answer == "correct":
-            raise ValueError(f"{ref} wasn't flagged.")
-        if r["status"] != "ok":
+        if r["status"] != "ok" or answer == "correct":
             missed = False
         elif answer is None:
             missed = r.get("missed", False)
         note = (r.get("note", "") if note is None else note).strip()[:500]
-        if answer == r.get("answer") and r.get("example"):   # the same answer again: only the note can change
-            if note != r.get("note", ""):
-                r["note"] = note
-                set_note(self.data, board, side, r["example"], note)
-                self._touch(f"{side.capitalize()} {ref}: note set to “{note}”" if note else f"{side.capitalize()} {ref}: note cleared")
+        reason = (r.get("reason", "") if reason is None else reason) if answer == "wrong" else ""
+        reason = reason if reason in REASONS else ""
+        if answer == r.get("answer") and r.get("example"):   # the same answer again: only the note and reason can change
+            if note != r.get("note", "") or reason != r.get("reason", ""):
+                r["note"], r["reason"] = note, reason
+                set_note(self.data, board, side, r["example"], note, reason)
+                self._touch(f"{side.capitalize()} {ref}: note set to “{note}”" + (f" ({REASONS[reason]})" if reason else "")
+                            if note or reason else f"{side.capitalize()} {ref}: note cleared")
             return
         if r.get("example"):
             delete_example(self.data, board, side, r.pop("example"))
         if r.pop("missed", False):
             set_reference_wrong(self.data, board, side, c["reference"], ref, False)
-        r["answer"], r["note"] = answer, note if answer == "wrong" else ""
+        r["answer"], r["note"], r["reason"] = answer, note if answer else "", reason
         img = self._aligned(c["uid"], side)
         if answer:
-            box = r.get("at") or self._box_round(side, r)
+            box = r.get("at") or box_round(r["box"])
             r["example"] = add_example(self.data, board, side, img, box, ref, "good" if answer == "correct" else "bad",
-                                       r["note"], c.get("serial", ""), c["uid"])
+                                       r["note"], c.get("serial", ""), c["uid"], reason, f"check/{c['uid']}/{side}")
             if missed:
                 r["missed"] = True
                 set_reference_wrong(self.data, board, side, c["reference"], ref)
@@ -619,14 +674,8 @@ class Checks:
         what = {"correct": "looked at, it's the right way round", "wrong": "WRONG way round"}.get(answer) or "answer cleared"
         if missed and answer:
             what = "WRONG, though the check passed it (the reference's look of it is no longer trusted)"
-        self._touch(f"{side.capitalize()} {ref}: {what}" + (f" ({r['note']})" if answer == "wrong" and r["note"] else ""))
-
-    def _box_round(self, side, r):
-        """A part's box with some board round it, as check_part compares it (for checks made before
-        results kept where the part was found)."""
-        x, y, w, h = r["box"]
-        e = max(3, int(0.3 * min(w, h)))
-        return [max(0, x - e), max(0, y - e), w + 2 * e, h + 2 * e]
+        said = "; ".join(v for v in (REASONS.get(reason, ""), r["note"]) if v)
+        self._touch(f"{side.capitalize()} {ref}: {what}" + (f" ({said})" if answer and said else ""))
 
     def learned(self, board: str, side: str) -> dict:
         """What the check has learned for a board design's side, for the page."""

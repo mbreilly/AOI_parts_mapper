@@ -20,6 +20,7 @@ from . import check as ck
 from . import db as dblib
 from . import photo as ph
 from . import projects as pj
+from . import teach as tl
 from .board import Board
 from .bom import BomError
 from .odb import OdbError
@@ -33,6 +34,8 @@ class App:
         self.board = Board(data_dir)
         self.history = dblib.History(data_dir, db_config)
         self.board.on_change = self.history.changed
+        self.board.on_profile = self.history.changed_profile
+        ck.LEARNED_LISTENERS.append(self.history.changed_learned)
         self.checks = ck.Checks(data_dir)
         self.checks.on_change = self.history.changed_check
         self.lock = threading.Lock()
@@ -109,6 +112,9 @@ def make_handler(app: App):
                 if parts[1:2] == ["check"]:
                     with app.lock:
                         return self._check_get(parts[2:], q)
+                if parts[1:2] == ["part"]:
+                    with app.lock:
+                        return self._part_get(parts[2:], q)
                 b = app.board
                 with app.lock:
                     if parts[1:] == ["state"]:
@@ -185,6 +191,44 @@ def make_handler(app: App):
                 return None
             return self._err("Not found", 404)
 
+        def _part_get(self, r, q):
+            """Any part on any lined-up photo (see teach.py)."""
+            data = app.board.data
+            if r == ["list"]:
+                return self._json({"parts": tl.part_list(data, q["uid"]), "reasons": ck.REASONS})
+            if r == ["sources"]:
+                return self._json({"sources": tl.sources(data, q["board"], q["side"])})
+            if r == ["info"]:
+                return self._json(tl.inspect(data, q["src"], q["ref"]))
+            if r == ["crop"]:
+                return self._send(200, tl.crop(data, q["src"], q["ref"], q.get("which", "board")), "image/jpeg")
+            return self._err("Not found", 404)
+
+        def _part_post(self, r):
+            b, data = app.board, app.board.data
+            j = self._jbody()
+            if r == ["pick"]:
+                return self._json(tl.pick(data, j["src"], float(j["fx"]), float(j["fy"])))
+            if r == ["teach"]:
+                src, ref, ans = j["src"], j["ref"], j.get("answer")
+                if ans not in ("good", "bad"):
+                    raise ValueError("Answer good or bad.")
+                c = app.checks.cur
+                kind, uid, side = src.split("/") if src.count("/") == 2 else ("", "", "")
+                res = None
+                if kind == "check" and c and c["uid"] == uid:
+                    res = next((x for x in c["sides"].get(side, {}).get("results", []) if x["ref"] == ref), None)
+                if res:     # a part of the check open here: the answer is the check's answer too
+                    app.checks.answer(side, ref, "correct" if ans == "good" else "wrong", j.get("note", ""),
+                                      res["status"] == "ok" and ans == "bad", j.get("reason", ""))
+                else:
+                    b.teach(src, ref, ans, j.get("reason", ""), j.get("note", ""), j.get("kind"))
+                return self._json(tl.inspect(data, src, ref))
+            if r == ["extra"]:
+                b.set_extra(j["ref"], j.get("kind"), j.get("wait"), bool(j.get("remove")), j.get("board"))
+                return self._json(b.state() if b.design else {"ok": True})
+            return self._err("Not found", 404)
+
         def _check_get(self, r, q):
             c = app.checks
             if r == ["state"]:
@@ -231,7 +275,7 @@ def make_handler(app: App):
                     c.align_points(side, self._jbody()["points"])
                 elif what == "answer":
                     j = self._jbody()
-                    c.answer(side, j["ref"], j.get("answer"), j.get("note"), bool(j.get("missed")))
+                    c.answer(side, j["ref"], j.get("answer"), j.get("note"), bool(j.get("missed")), j.get("reason"))
                 else:
                     return self._err("Not found", 404)
             elif len(r) == 4 and r[0] == "learned" and r[3] in ("delete", "trust"):
@@ -272,6 +316,8 @@ def make_handler(app: App):
                         return self._json(b.state())
                     if r[:1] == ["check"]:
                         return self._check_post(r[1:])
+                    if r[:1] == ["part"]:
+                        return self._part_post(r[1:])
                     if len(r) == 3 and r[0] == "history":
                         uid, what = r[1], r[2]
                         if what == "open":

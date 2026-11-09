@@ -28,11 +28,13 @@ from . import design as designlib
 from . import odb as odblib
 from . import photo as ph
 from . import projects as pj
+from .check import REASONS
 
 DEFAULT_PROFILE = {
     "columns": None, "kinds": {}, "hidden": {}, "rot_sign": None, "markings": dict(designlib.DEFAULT_MARKINGS),
     "orient": {"front": list(ph.DEFAULT_ORIENT["front"]), "back": list(ph.DEFAULT_ORIENT["back"])},
     "min_px": 14, "camera": None, "step": None, "use_tantalums": False,
+    "extra": {},     # parts added by hand: {ref: {"kind", "wait": waiting for a photo to be taught on}}
 }
 
 
@@ -68,6 +70,7 @@ class Board:
         self.sides = {}
         self.project = None         # project.json of the board being mapped
         self.on_change = None       # called with a project's uid whenever it changes
+        self.on_profile = None      # called with a board name whenever its saved choices change
         self._quiet = False         # set while reopening, which changes nothing
         self._import_old_boards()
 
@@ -259,6 +262,7 @@ class Board:
     def rebuild(self):
         self.design = designlib.build(self.odb, self.bom, self.profile)
         self.design["markings"] = self.profile["markings"]
+        self.design["components"] = designlib.components(self.odb, self.bom, self.design)
         if self.profile.get("rot_sign") is None:
             ev = self.design["rotation_evidence"]["votes"]
             if ev[1] != ev[-1]:
@@ -273,6 +277,105 @@ class Board:
     def save_profile(self):
         _write_json(self.dir / "profile.json", self.profile)
         _write_json(self._profile_path(self.name), self.profile)
+        if self.on_profile:
+            self.on_profile(self.name)
+
+    # ---- parts added by hand ----------------------------------------------------------------
+    def set_extra(self, ref: str, kind: str | None = None, wait: bool | None = None, remove: bool = False,
+                  board: str | None = None) -> dict:
+        """Adds a part of the design to the check by hand (any part, in the BOM or not), changes its
+        kind or whether it waits for a photo to be taught on, or takes it out. Kept in the board's
+        profile, and the board's references are placed again with it straight away (from the
+        alignment they already have), so the next check covers it."""
+        board = board or self.name
+        mine = bool(self.design) and board == self.name
+        if kind and kind not in bomlib.KINDS:
+            raise ValueError(f"Unknown kind {kind}.")
+        if mine:
+            prof = self.profile
+            known = {p.ref for p in self.odb.parts} - set(self.odb.fiducials)
+        else:
+            prof = _read_json(self._profile_path(board), {}) or {}
+            ref_uid = next((r["uid"] for r in self._references(board)), None)
+            if not ref_uid:
+                raise ValueError(f"Open a {board} project to add parts to it.")
+            from .teach import design_for
+            known = {c["ref"] for c in design_for(self.data, ref_uid).get("components", [])}
+        extra = prof.setdefault("extra", {})
+        if remove:
+            if ref not in extra:
+                return extra
+            extra.pop(ref)
+            what = f"{ref} taken out of the parts added by hand"
+        else:
+            if ref not in known:
+                raise ValueError(f"{ref} isn't a part in the design.")
+            e = extra.setdefault(ref, {"kind": kind or "look", "added": pj.now()})
+            if kind:
+                e["kind"] = kind
+            if wait is not None:
+                e["wait"] = bool(wait)
+            what = f"{ref} added to the check as {bomlib.KINDS[e['kind']]}" + (", waiting for a photo to be taught on" if e.get("wait") else "")
+        if mine:
+            self.rebuild()
+            self.save_profile()
+            self._touch(what)
+        else:
+            _write_json(self._profile_path(board), prof)
+            if self.on_profile:
+                self.on_profile(board)
+        self._sync_references(board, extra, what)
+        return extra
+
+    def _references(self, board):
+        from .check import references
+        return [r for r in references(self.data) if r["board"] == board]
+
+    def _sync_references(self, board, extra, what):
+        """The board's references (other than the project open here) get the same added parts and
+        are placed again from their saved alignment."""
+        for r in self._references(board):
+            if self.project and r["uid"] == self.project["uid"]:
+                continue
+            f = pj.folder(self.data, r["uid"]) / "profile.json"
+            prof = _read_json(f) or _read_json(self._profile_path(board), {}) or {}
+            prof["extra"] = json.loads(json.dumps(extra))
+            _write_json(f, prof)
+            o = Board(self.data)
+            o.on_change = self.on_change
+            o.open_project(r["uid"])          # placed again with the parts, from its saved alignment
+            o._touch(what + " (from the board's choices)")
+
+    def teach(self, src: str, ref: str, label: str, reason: str = "", note: str = "", kind: str | None = None) -> str:
+        """Keeps a part on any lined-up photo of a board as a good or bad example (see teach.py). A
+        part that isn't in the check yet is added to it, as kind (by default "check its look")."""
+        from . import teach as tl
+        s = tl.source(self.data, src)
+        ex_id = tl.add(self.data, src, ref, label, reason, note)
+        if not any(p["ref"] == ref for p in tl.design_for(self.data, s["design"])["parts"]):
+            self.set_extra(ref, kind or "look", board=s["board"])
+        what = f"Taught {s['side']} {ref} as {'GOOD' if label == 'good' else 'BAD'}" + \
+            (f" ({'; '.join(v for v in (REASONS.get(reason, ''), note) if v)})" if reason or note else "") + f" from {s['label']}"
+        if s["kind"] == "project":
+            p = self.project if self.project and self.project["uid"] == s["uid"] else pj.load(self.data, s["uid"])
+            self._touch(what, p)
+        return ex_id
+
+    def extras(self) -> list[dict]:
+        """The parts added by hand, with how much each has been taught, for the Parts tab."""
+        from .check import load_examples
+        if not self.design:
+            return []
+        geo = {c["ref"]: c for c in self.design.get("components", [])}
+        out = []
+        for ref, e in sorted(self.profile.get("extra", {}).items()):
+            c = geo.get(ref, {})
+            side = "front" if c.get("side") == "top" else "back"
+            ex = [x for x in load_examples(self.data, self.name, side)["examples"] if x["ref"] == ref]
+            out.append({"ref": ref, "kind": e.get("kind", "look"), "wait": bool(e.get("wait")), "side": side,
+                        "value": c.get("value", ""), "package": c.get("package", ""), "in_bom": c.get("in_bom", False),
+                        "missing": not c, "good": sum(x["label"] == "good" for x in ex), "bad": sum(x["label"] == "bad" for x in ex)})
+        return out
 
     def set_columns(self, cols: dict):
         self.profile["columns"] = {k: (int(v) if v not in (None, "") else None) for k, v in cols.items()}
@@ -541,8 +644,9 @@ class Board:
             "steps": [{k: s[k] for k in ("name", "sides", "has_components", "panel")} for s in self.steps],
             "bom_header": self.bom["header"] if self.bom else [],
             "bom_columns": self.bom["columns"] if self.bom else {},
-            "lines": lines, "kinds": bomlib.KINDS,
-            "profile": {k: self.profile[k] for k in ("kinds", "hidden", "rot_sign", "markings", "orient", "min_px", "camera", "step", "use_tantalums")},
+            "lines": lines, "kinds": bomlib.KINDS, "reasons": REASONS,
+            "profile": {k: self.profile[k] for k in ("kinds", "hidden", "rot_sign", "markings", "orient", "min_px", "camera", "step", "use_tantalums", "extra")},
+            "extras": self.extras(),
             "design": None if not d else {
                 "name": d["name"], "units": d["units"], "units_known": d["units_known"], "outline": d["outline"],
                 "fiducials": d["fiducials"], "counts": d["counts"], "rot_sign": d["rot_sign"],

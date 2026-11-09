@@ -16,6 +16,8 @@ The login is read from a MySQL option file, by default ~/.config/aoimap/db.cnf:
     host=localhost
 """
 
+import hashlib
+import json
 import threading
 import time
 import traceback
@@ -30,7 +32,7 @@ except ImportError:   # the app still runs, without the database
     pymysql = None
 
 DEFAULT_CONFIG = Path.home() / ".config" / "aoimap" / "db.cnf"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2      # 2: learned examples, board choices and parts added by hand
 
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS aoi_schema (version INT NOT NULL) ENGINE=InnoDB""",
@@ -119,6 +121,47 @@ SCHEMA = [
         KEY ref (ref),
         FOREIGN KEY (check_id) REFERENCES aoi_checks (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    # the Parts tab's choices for each board design (the whole profile.json), and the parts added by hand
+    """CREATE TABLE IF NOT EXISTS aoi_board_profiles (
+        board VARCHAR(128) NOT NULL PRIMARY KEY,
+        profile MEDIUMTEXT NOT NULL,
+        updated_at DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS aoi_board_extra (
+        board VARCHAR(128) NOT NULL,
+        ref VARCHAR(64) NOT NULL,
+        kind VARCHAR(16) NOT NULL,
+        wait_for_photo TINYINT(1) NOT NULL DEFAULT 0,
+        added_at DATETIME NULL,
+        PRIMARY KEY (board, ref)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    # what the board check has learned: every example with its image
+    """CREATE TABLE IF NOT EXISTS aoi_learned (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        ex_id VARCHAR(160) NOT NULL UNIQUE,
+        board VARCHAR(128) NOT NULL,
+        side VARCHAR(8) NOT NULL,
+        ref VARCHAR(64) NOT NULL,
+        label VARCHAR(8) NOT NULL,
+        reason VARCHAR(16) NOT NULL DEFAULT '',
+        note TEXT,
+        serial VARCHAR(128) NOT NULL DEFAULT '',
+        check_uid VARCHAR(80) NOT NULL DEFAULT '',
+        source VARCHAR(255) NOT NULL DEFAULT '',
+        created_at DATETIME NULL,
+        file VARCHAR(255) NOT NULL,
+        sha256 CHAR(64) NOT NULL,
+        bytes INT NOT NULL,
+        image MEDIUMBLOB NOT NULL,
+        KEY board_side_ref (board, side, ref)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS aoi_learned_reference_wrong (
+        board VARCHAR(128) NOT NULL,
+        side VARCHAR(8) NOT NULL,
+        reference_uid VARCHAR(80) NOT NULL,
+        ref VARCHAR(64) NOT NULL,
+        PRIMARY KEY (board, side, reference_uid, ref)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
 ]
 
 LIST_COLS = ("uid, board, serial, notes, station, odb_file, bom_file, units, parts, closeups, "
@@ -177,7 +220,7 @@ class History:
             for sql in SCHEMA:
                 c.execute(sql)
             c.execute("SELECT MAX(version) AS v FROM aoi_schema")
-            if not (c.fetchone() or {}).get("v"):
+            if ((c.fetchone() or {}).get("v") or 0) < SCHEMA_VERSION:
                 c.execute("INSERT INTO aoi_schema (version) VALUES (%s)", (SCHEMA_VERSION,))
         self._conn.commit()
         return self._conn
@@ -237,6 +280,12 @@ class History:
     def changed_check(self, uid: str):
         self.changed("check:" + uid)
 
+    def changed_profile(self, board: str):
+        self.changed("profile:" + board)
+
+    def changed_learned(self, board: str, side: str):
+        self.changed(f"learned:{side}:{board}")
+
     def catch_up(self):
         """Writes every project and check folder the database doesn't have, or has an older copy of."""
         for table, ids, load, key in (("aoi_projects", pj.uids, pj.load, ""), ("aoi_checks", ck.uids, ck.load, "check:")):
@@ -251,6 +300,65 @@ class History:
                     continue
                 if known.get(uid) != p.get("updated"):
                     self.write(key + uid)
+        # the board choices and what the check has learned (only images the database lacks are sent)
+        for f in sorted((self.data / "boards").glob("*/profile.json")):
+            self.write_profile(f.parent.name)
+        for f in sorted((self.data / "learned").glob("*/*/examples.json")):
+            board = (pj._read_json(f, {}) or {}).get("board") or f.parent.parent.name
+            self.write_learned(board, f.parent.name)
+
+    def write_profile(self, board: str):
+        prof = pj._read_json(self.data / "boards" / pj.slug(board) / "profile.json")
+        if prof is None:
+            return False
+        extra = prof.get("extra") or {}
+
+        def go(c):
+            c.execute("""INSERT INTO aoi_board_profiles (board, profile, updated_at) VALUES (%s, %s, NOW())
+                         ON DUPLICATE KEY UPDATE updated_at=IF(profile=VALUES(profile), updated_at, NOW()), profile=VALUES(profile)""",
+                      (board, json.dumps(prof, sort_keys=True)))
+            c.execute("DELETE FROM aoi_board_extra WHERE board=%s", (board,))
+            if extra:
+                c.executemany("INSERT INTO aoi_board_extra (board, ref, kind, wait_for_photo, added_at) VALUES (%s, %s, %s, %s, %s)",
+                              [(board, ref[:64], e.get("kind") or "look", bool(e.get("wait")), e.get("added") or None)
+                               for ref, e in extra.items()])
+            return True
+        return self._run(go)
+
+    def write_learned(self, board: str, side: str):
+        """One side's learned examples: new ones with their image, changed notes, deleted ones removed."""
+        d = ck.load_examples(self.data, board, side)
+        folder = ck.learned_dir(self.data, board, side)
+
+        def go(c):
+            c.execute("SELECT ex_id FROM aoi_learned WHERE board=%s AND side=%s", (board, side))
+            have = {r["ex_id"] for r in c.fetchall()}
+            keep = set()
+            for e in d["examples"]:
+                meta = (e["ref"][:64], e["label"], e.get("reason") or "", e.get("note") or "", (e.get("serial") or "")[:128],
+                        e.get("check") or "", (e.get("source") or "")[:255], e.get("date") or None, e["file"])
+                if e["id"] in have:
+                    keep.add(e["id"])
+                    c.execute("""UPDATE aoi_learned SET ref=%s, label=%s, reason=%s, note=%s, serial=%s, check_uid=%s, source=%s,
+                                 created_at=%s, file=%s WHERE ex_id=%s""", meta + (e["id"],))
+                    continue
+                try:
+                    img = (folder / e["file"]).read_bytes()
+                except OSError:
+                    continue
+                keep.add(e["id"])
+                c.execute("""INSERT INTO aoi_learned (ref, label, reason, note, serial, check_uid, source, created_at, file,
+                               ex_id, board, side, sha256, bytes, image)
+                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                          meta + (e["id"], board, side, hashlib.sha256(img).hexdigest(), len(img), img))
+            for gone in have - keep:
+                c.execute("DELETE FROM aoi_learned WHERE ex_id=%s", (gone,))
+            c.execute("DELETE FROM aoi_learned_reference_wrong WHERE board=%s AND side=%s", (board, side))
+            rows = [(board, side, ref_uid, r) for ref_uid, refs in d["reference_wrong"].items() for r in refs]
+            if rows:
+                c.executemany("INSERT INTO aoi_learned_reference_wrong (board, side, reference_uid, ref) VALUES (%s, %s, %s, %s)", rows)
+            return True
+        return self._run(go)
 
     def write_check(self, uid: str):
         try:
@@ -339,6 +447,11 @@ class History:
     def write(self, uid: str):
         if uid.startswith("check:"):
             return self.write_check(uid[6:])
+        if uid.startswith("profile:"):
+            return self.write_profile(uid[8:])
+        if uid.startswith("learned:"):
+            side, board = uid[8:].split(":", 1)
+            return self.write_learned(board, side)
         try:
             p = pj.load(self.data, uid)
             s = pj.summary(self.data, uid)

@@ -13,11 +13,13 @@ const ui = {
   anchors: { front: null, back: null },
   closeup: null,              // {side, index, pts, cur} while working on a closeup
   ghostOn: true, ghostOp: 35, zoom: 100, stream: null, rot: {},
+  pick: true,                 // clicks on a lined-up photo pick a part to look at (not a fiducial)
+  look: { front: null, back: null },   // the part looked at on each side
 };
 try { Object.assign(ui, JSON.parse(localStorage.getItem("aoimap-ui") || "{}"), { pts: { front: {}, back: {} }, closeup: null, stream: null, anchors: { front: null, back: null }, rot: {} }); } catch (e) { /* private window */ }
 const keepUi = () => { try { localStorage.setItem("aoimap-ui", JSON.stringify({ lineFilter: ui.lineFilter, partsFilter: ui.partsFilter, ghostOn: ui.ghostOn, ghostOp: ui.ghostOp, zoom: ui.zoom, marks: ui.marks })); } catch (e) { } };
 
-const KIND_NAMES = { ic: "IC", tantalum: "Tantalum", electrolytic: "Electrolytic", diode: "Diode", led: "LED", other: "Other" };
+const KIND_NAMES = { ic: "IC", tantalum: "Tantalum", electrolytic: "Electrolytic", diode: "Diode", led: "LED", other: "Other", look: "Look only" };
 const SIDES = { front: "top", back: "bot" };
 const ORIENTS = {
   front: [{ v: [1, -1], t: "TOP EDGE UP", d: "as the design shows it" }, { v: [-1, 1], t: "TURNED 180°", d: "top edge at the bottom" }],
@@ -93,7 +95,7 @@ $("#tabs").addEventListener("click", e => {
 function goTab(t) {
   tab = t; ui.closeup = null; stopCamera(); stopCk(); say("");
   render();
-  if (tab === "front" || tab === "back") loadAnchors(tab);
+  if (tab === "front" || tab === "back") { loadAnchors(tab); $("#look-insp").innerHTML = ""; $("#look-ref").value = ""; ui.highlight = null; }
   if (tab === "history") loadHistory();
   if (tab === "check") loadCheck();
 }
@@ -237,7 +239,55 @@ function renderParts() {
   if (!minpxKnob) minpxKnob = knob($("#knob-minpx"), S.profile.min_px, (v, end) => { if (end) act(() => post("api/option", { key: "min_px", value: v })); });
   else minpxKnob.set(S.profile.min_px);
   $("#use-tant").checked = !!S.profile.use_tantalums;
+  // parts added by hand
+  if (S.project) loadPartList(S.project.uid);
+  if (!$("#xp-kind").options.length) $("#xp-kind").innerHTML = Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("");
+  $("#xp-list").innerHTML = (S.extras || []).map(x => `<div><span class="grow"><b>${esc(x.ref)}</b> ${esc(KIND_NAMES[x.kind] || x.kind)} · ${x.side}
+      <span class="dim">${esc(x.value || x.package)}${x.in_bom ? "" : " · not in the BOM"}${x.missing ? " · not in this design!" : ""}</span><br>
+      <span class="dim">${x.good} good, ${x.bad} bad${x.wait && !(x.good + x.bad) ? " · waiting for a new photo" : ""}</span></span>
+    <button data-xtrain="${esc(x.ref)}" data-side="${x.side}">TRAIN</button>
+    <button data-xwait="${esc(x.ref)}" class="${x.wait ? "on" : ""}" title="Ask about it on the next check of its side until it's answered">WAIT FOR PHOTO</button>
+    <button data-xdel="${esc(x.ref)}">REMOVE</button></div>`).join("") || `<div class="dim">None added yet.</div>`;
 }
+const XP = { ref: null, side: null };
+async function openTrain(ref, side) {
+  XP.ref = ref; XP.side = side;
+  $("#xp-train").hidden = false;
+  $("#xp-train-title").textContent = `TEACH ${ref} (${side.toUpperCase()})`;
+  const x = (S.extras || []).find(e => e.ref === ref);
+  $("#xp-wait").classList.toggle("on", !!(x && x.wait));
+  $("#xp-wait").textContent = x && x.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO";
+  let srcs = [];
+  try { srcs = (await api(`api/part/sources?board=${encodeURIComponent(S.name)}&side=${side}`)).sources; } catch (e) { say(e.message, true); }
+  $("#xp-src").innerHTML = srcs.map(r => `<option value="${esc(r.id)}">${esc(r.label)} · ${esc(r.date.slice(0, 16))}</option>`).join("")
+    || `<option value="">No lined-up ${side} photo yet</option>`;
+  showTrain();
+}
+const showTrain = () => $("#xp-src").value ? showPart($("#xp-insp"), $("#xp-src").value, XP.ref, refreshState)
+  : ($("#xp-insp").innerHTML = `<div class="dim">No photo of the ${XP.side} yet: press Wait for a new photo, or line up a photo of the ${XP.side} first.</div>`);
+async function refreshState() { const st = await api("api/state"); S = st; S._r = Date.now(); render(); }
+$("#xp-src").addEventListener("change", showTrain);
+$("#xp-close").addEventListener("click", () => { $("#xp-train").hidden = true; XP.ref = null; });
+$("#xp-wait").addEventListener("click", () => {
+  const x = (S.extras || []).find(e => e.ref === XP.ref);
+  act(() => post("api/part/extra", { ref: XP.ref, wait: !(x && x.wait) }), x && x.wait ? `${XP.ref} no longer waits for a photo.` : `${XP.ref} will be asked about on the next check of the ${XP.side}, until it's answered.`)
+    .then(() => XP.ref && openTrain(XP.ref, XP.side));
+});
+$("#xp-add").addEventListener("click", () => {
+  const ref = typedRef($("#xp-ref").value); if (!ref) return;
+  const p = PL.parts.find(q => q.ref === ref);
+  if (!p) return say(`${ref} isn't a part in this design.`, true);
+  act(() => post("api/part/extra", { ref, kind: $("#xp-kind").value }), `${ref} added to the check. Train it now on a photo, or wait for a new one.`)
+    .then(() => { $("#xp-ref").value = ""; PL.uid = null; loadPartList(S.project.uid); openTrain(ref, p.side === "top" ? "front" : "back"); });
+});
+$("#xp-list").addEventListener("click", e => {
+  const t = e.target.closest("[data-xtrain]"); if (t) return openTrain(t.dataset.xtrain, t.dataset.side);
+  const w = e.target.closest("[data-xwait]");
+  if (w) { const x = S.extras.find(q => q.ref === w.dataset.xwait); return act(() => post("api/part/extra", { ref: x.ref, wait: !x.wait })); }
+  const d = e.target.closest("[data-xdel]");
+  if (d && confirm(`Take ${d.dataset.xdel} out of the check? What it has learned is kept.`))
+    act(() => post("api/part/extra", { ref: d.dataset.xdel, remove: true }), `${d.dataset.xdel} taken out of the check.`).then(() => { if (XP.ref === d.dataset.xdel) $("#xp-train").hidden = true; });
+});
 $("#line-filter").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { ui.lineFilter = b.dataset.f; keepUi(); renderParts(); } });
 $("#line-search").addEventListener("input", e => { ui.lineSearch = e.target.value; renderParts(); });
 $("#lines").addEventListener("change", e => {
@@ -350,6 +400,10 @@ function renderSide(side) {
   $("#closeup-box").hidden = cu || !st.aligned || !tiles.length;
   $("#tiles").innerHTML = tiles.map(t => `<div><span class="grow"><b>Area ${t.index + 1}</b> <span class="dim">${esc(t.refs.join(", "))}</span></span>
     <span class="${t.aligned ? "ok" : "dim"}">${t.aligned ? "✓" : t.taken ? "line up" : ""}</span><button data-tile="${t.index}">${t.taken ? "OPEN" : "TAKE"}</button></div>`).join("");
+  // looking at one part
+  $("#look-box").hidden = cu || !st.aligned;
+  $("#look-pick").checked = ui.pick;
+  if (st.aligned && !cu && S.project) loadPartList(S.project.uid);
   // parts
   $("#parts-box").hidden = cu || !st.aligned;
   if (st.aligned && !cu) {
@@ -386,8 +440,23 @@ function drawMarks(side) {
 }
 $("#photo").addEventListener("load", () => drawMarks(tab));
 
+const sideSrc = side => `project/${S.project.uid}/${side}`;
+function lookAt(side, ref) {
+  ui.look[side] = ref; ui.highlight = ref;
+  $("#look-ref").value = ref || "";
+  renderSide(side);
+  showPart($("#look-insp"), sideSrc(side), ref, async () => { const st = await api("api/state"); S = st; S._r = Date.now(); renderSide(side); });
+}
 $("#photo").addEventListener("click", async e => {
   const side = tab; if (side !== "front" && side !== "back") return;
+  if (!ui.closeup && S.sides[side].aligned && ui.pick) {
+    const rect = $("#photo").getBoundingClientRect();
+    try {
+      const r = await post("api/part/pick", { src: sideSrc(side), fx: (e.clientX - rect.left) / rect.width, fy: (e.clientY - rect.top) / rect.height });
+      if (r.ref) lookAt(side, r.ref); else say("No part there. Click on a part's body.", true);
+    } catch (err) { say(err.message, true); }
+    return;
+  }
   const p = prompts(side); if (!p.length) return;
   const cu = ui.closeup;
   let cur = cu ? cu.cur : ui.cur[side];
@@ -411,6 +480,7 @@ $("#photo").addEventListener("click", async e => {
 $("#prompts").addEventListener("click", e => {
   const d = e.target.closest("[data-i]"); if (!d) return;
   const side = tab, i = +d.dataset.i;
+  ui.pick = false;                                       // clicks place fiducials again
   delete curPts(side)[prompts(side)[i].ref];           // pick a row to redo it
   if (ui.closeup) ui.closeup.cur = i; else ui.cur[side] = i;
   renderSide(side);
@@ -433,8 +503,8 @@ $("#auto-find").addEventListener("click", async () => {
 $("#do-align").addEventListener("click", () => {
   const side = tab, cu = ui.closeup;
   if (cu) return act(() => post(`api/side/${side}/closeup/${cu.index}/align`, { points: cu.pts }), "Closeup lined up.");
-  act(async () => { const s = await post(`api/side/${side}/align`, { points: ui.pts[side] }); S = s; await loadRotation(side); return s; },
-    "Lined up. Coloured outlines can be checked; grey ones can't (see the list).");
+  act(async () => { const s = await post(`api/side/${side}/align`, { points: ui.pts[side] }); S = s; ui.pick = true; await loadRotation(side); return s; },
+    "Lined up. Coloured outlines can be checked; grey ones can't (see the list). Click any part to look at it.");
 });
 async function loadRotation(side) {
   try { ui.rot[side] = await api(`api/side/${side}/rotation`); } catch (e) { ui.rot[side] = null; }
@@ -458,7 +528,11 @@ $("#align-result").addEventListener("click", e => { if (e.target.id === "back-fu
 $("#parts-filter").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { ui.partsFilter = b.dataset.f; keepUi(); renderSide(tab); } });
 $("#marks-on").addEventListener("change", e => { ui.marks = e.target.checked; keepUi(); renderSide(tab); });
 $("#side-parts").addEventListener("click", e => { const tr = e.target.closest("tr[data-ref]"); if (!tr) return;
-  ui.highlight = ui.highlight === tr.dataset.ref ? null : tr.dataset.ref; renderSide(tab); });
+  if (ui.highlight === tr.dataset.ref) { ui.highlight = null; ui.look[tab] = null; $("#look-insp").innerHTML = ""; renderSide(tab); }
+  else lookAt(tab, tr.dataset.ref); });
+$("#look-pick").addEventListener("change", e => { ui.pick = e.target.checked; });
+$("#look-go").addEventListener("click", () => { const r = typedRef($("#look-ref").value); if (r) lookAt(tab, r); });
+$("#look-ref").addEventListener("change", () => { const r = typedRef($("#look-ref").value); if (r) lookAt(tab, r); });
 
 // ---- the camera ------------------------------------------------------------------------------
 // A webcam (in the browser), or a Canon EOS on USB driven by the server with gphoto2: its live view
@@ -540,6 +614,74 @@ function sendPhoto(blob) {
 }
 $("#ghost-on").addEventListener("change", e => { ui.ghostOn = e.target.checked; keepUi(); renderSide(tab); });
 
+// ---- looking at one part on a photo, and teaching the check -------------------------------
+// Used on the Front/Back tabs (the mapped photo), Check a board (the lined-up photo of the board
+// checked) and the Parts tab (any photo of the board). src names the photo, see teach.py.
+const PL = { uid: null, parts: [], reasons: {} };
+async function loadPartList(uid) {
+  if (!uid || PL.uid === uid) return;
+  PL.uid = uid;
+  try {
+    const r = await api(`api/part/list?uid=${encodeURIComponent(uid)}`);
+    PL.parts = r.parts; PL.reasons = r.reasons;
+    $("#dl-parts").innerHTML = r.parts.map(p => `<option value="${esc(p.ref)}">${esc([p.value, p.description, p.package].filter(Boolean).join(" · "))}${p.kind ? "" : p.in_bom ? " (not in the check)" : " (not in the BOM)"}</option>`).join("");
+  } catch (e) { PL.uid = null; say(e.message, true); }
+}
+// what was typed: a ref, or a value that only one part has
+function typedRef(text) {
+  const t = text.trim().split(/\s+/)[0] || "";
+  if (!t) return "";
+  const hit = PL.parts.find(p => p.ref.toLowerCase() === t.toLowerCase());
+  if (hit) return hit.ref;
+  const byVal = PL.parts.filter(p => (p.value || "").toLowerCase() === text.trim().toLowerCase());
+  return byVal.length ? byVal[0].ref : t;
+}
+const VERDICT_TEXT = { correct: "CORRECT", wrong: "WRONG", unsure: "NOT SURE", skipped: "SKIPPED", reference: "REFERENCE" };
+const partCrop = (src, ref, which, v) => `api/part/crop?src=${encodeURIComponent(src)}&ref=${encodeURIComponent(ref)}&which=${which}&v=${v || ""}`;
+function reasonSelect(cls, cur) {
+  const rs = Object.keys(PL.reasons).length ? PL.reasons : (S && S.reasons) || {};
+  return `<select class="${cls}"><option value="">Why bad?</option>${Object.entries(rs).map(([k, t]) => `<option value="${k}" ${cur === k ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
+}
+async function showPart(el, src, ref, after) {
+  if (!ref) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="dim">Looking at ${esc(ref)}...</div>`;
+  let d;
+  try { d = await api(`api/part/info?src=${encodeURIComponent(src)}&ref=${encodeURIComponent(ref)}`); }
+  catch (e) { el.innerHTML = `<div class="warn">${esc(e.message)}</div>`; return; }
+  const v = Date.now(), ans = d.answer;
+  el.innerHTML = `<div class="insp">
+    <div><b>${esc(d.ref)}</b> ${d.in_check ? esc(KIND_NAMES[d.kind] || d.kind) : `<span class="dim">not in the check</span>`} · ${esc(d.value || "")}
+      ${d.description ? `<span class="dim">${esc(d.description)}</span>` : ""} <span class="dim">${esc(d.package || "")}${d.in_bom ? "" : " · not in the BOM"}</span></div>
+    <div class="row"><span class="verdict v-${d.verdict}">${VERDICT_TEXT[d.verdict] || d.verdict}</span><span class="dim grow">${esc(d.why)}</span></div>
+    <div class="pics"><figure><img src="${partCrop(src, d.ref, "board", v)}" alt="">${esc(d.label)}</figure>
+      ${d.reference && !d.verdict.startsWith("ref") ? `<figure><img src="${partCrop(src, d.ref, "reference", v)}" alt="">reference</figure>` : ""}</div>
+    <div class="dim">Learned so far: ${d.good} good, ${d.bad} bad${d.pending ? " · waiting for a new photo to be taught on" : ""}${ans ? ` · this board answered ${ans === "correct" ? "GOOD" : "BAD"}` : ""}</div>
+    <div class="row">${d.in_check ? "" : `<select class="t-kind" title="What kind of part to check it as">${Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`}
+      <button data-t="good" class="${ans === "correct" ? "on" : ""}">GOOD</button><button data-t="bad" class="wrongbtn ${ans === "wrong" ? "on" : ""}">BAD</button>
+      ${reasonSelect("t-reason", d.reason)}<input class="note t-note" value="${esc(d.note || "")}" placeholder="Note (kept with the example)"></div>
+    ${d.in_check && !d.extra ? "" : `<div class="row">${d.in_check ? "" : `<button data-t="add">ADD TO THE CHECK</button>`}<button data-t="wait" class="${d.wait ? "on" : ""}">${d.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO"}</button></div>`}
+    ${d.examples.length ? `<div class="dim">${d.examples.map(e => `<span class="${e.label === "good" ? "st-ok" : "st-wrong"}">${e.label.toUpperCase()}</span>${e.reason ? " " + esc(PL.reasons[e.reason] || e.reason) : ""}${e.note ? " · " + esc(e.note) : ""} <span class="dim">${esc(e.serial || "")} ${esc(e.date)}</span>`).join("<br>")}</div>` : ""}
+  </div>`;
+  el.onclick = async e => {
+    const b = e.target.closest("[data-t]"); if (!b) return;
+    const kind = $(".t-kind", el) ? $(".t-kind", el).value : null;
+    try {
+      if (b.dataset.t === "add" || b.dataset.t === "wait") {
+        await post("api/part/extra", { ref: d.ref, kind: d.in_check ? null : kind, board: d.board, ...(b.dataset.t === "wait" ? { wait: !d.wait } : {}) });
+        say(b.dataset.t === "add" ? `${d.ref} added to the check.` : d.wait ? `${d.ref} no longer waits for a photo.` : `${d.ref} will be asked about on the next check of the ${d.side}.`);
+      } else {
+        const reason = $(".t-reason", el).value, note = $(".t-note", el).value;
+        if (b.dataset.t === "bad" && !reason) { say("Pick why it's bad (reversed, missing...) first.", true); return; }
+        await post("api/part/teach", { src, ref: d.ref, answer: b.dataset.t, reason, note, kind });
+        say(`Learned: ${d.ref} kept as a ${b.dataset.t} example${d.in_check ? "" : ", and added to the check"}.`);
+      }
+      PL.uid = null;
+      if (after) await after(d.ref);
+      showPart(el, src, d.ref, after);
+    } catch (err) { say(err.message, true); }
+  };
+}
+
 // ---- 5 map ---------------------------------------------------------------------------------
 function renderMap() {
   const d = S.design, rows = [];
@@ -619,21 +761,23 @@ async function loadChecks() {
   } catch (e) { say(e.message, true); }
 }
 
+const reasonName = k => (PL.reasons[k] || (S && S.reasons && S.reasons[k]) || k);
 const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it", fault: "known fault" };
 const ckFile = (uid, side, name, extra = "") => `api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
 const ckCrop = (uid, side, ref, which) => `api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
 function flaggedHtml(c, side, editable) {
   const st = c.sides[side] || {}, rs = (st.results || []).filter(r => r.status !== "ok" || r.missed);
   return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
-      <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · ${r.missed ? `<span class="st-wrong">missed by the check</span>` : `<span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>`}
+      <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · ${r.missed ? `<span class="st-wrong">missed by the check</span>` : r.new ? `<span class="st-check">new part, teach me</span>` : `<span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>`}
         <div class="dim">${esc(r.why || "")}</div></div>
       <div class="pics"><figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "reference")}" alt="">reference</figure>
         <figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "board")}" alt="">this board</figure></div>
       ${editable ? `<div class="row">${r.missed ? "" : `<button data-ans="correct" data-ref="${esc(r.ref)}" class="${r.answer === "correct" ? "on" : ""}">RIGHT WAY ROUND</button>`}
         <button data-ans="wrong" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" ? "on wrong" : ""}">WRONG</button>
-        <input class="note" data-note="${esc(r.ref)}" value="${esc(r.note || "")}" placeholder="What's wrong (kept with what the check learns)"></div>
+        ${reasonSelect("reason", r.reason).replace("<select ", `<select data-reason="${esc(r.ref)}" `)}
+        <input class="note" data-note="${esc(r.ref)}" value="${esc(r.note || "")}" placeholder="Note (kept with the example)"></div>
         ${r.answer ? `<div class="dim learnt">Learned as a ${r.answer === "correct" ? "good" : "bad"} example of ${esc(r.ref)}${r.example ? "" : " (since deleted)"}.</div>` : ""}`
-      : `<div>${r.answer === "wrong" ? `<span class="st-wrong">Answered: wrong${r.note ? " · " + esc(r.note) : ""}</span>` : r.answer === "correct" ? "Answered: right way round" : `<span class="st-check">Not answered</span>`}</div>`}
+      : `<div>${r.answer === "wrong" ? `<span class="st-wrong">Answered: wrong${r.reason ? " · " + esc(reasonName(r.reason)) : ""}${r.note ? " · " + esc(r.note) : ""}</span>` : r.answer === "correct" ? `Answered: right way round${r.note ? " · " + esc(r.note) : ""}` : `<span class="st-check">Not answered</span>`}</div>`}
     </div>`).join("");
 }
 
@@ -698,8 +842,8 @@ async function showLearned(board) {
     <h2>WHAT THE CHECK HAS LEARNED  ·  ${esc(board)}</h2>
     <div class="row"><div class="seg" id="lr-side">${["front", "back"].map(s => `<button data-s="${s}" class="${s === side ? "on" : ""}">${s.toUpperCase()}</button>`).join("")}</div>
       <span class="dim">${d.examples.filter(e => e.label === "good").length} good · ${d.examples.filter(e => e.label === "bad").length} bad</span></div>
-    <p class="dim">Each answer on Check a board is kept here: a flagged part answered <b>Right way round</b> as a good example, one
-      answered <b>Wrong</b> (or flagged as missed) as a bad example with its note. Later boards of this design are compared with these as
+    <p class="dim">Each answer on Check a board, and each part taught GOOD or BAD from a photo, is kept here: a good example, or a bad one
+      with its reason and note. Later boards of this design are compared with these as
       well as the reference: a part like a good example isn't flagged again, and one like a bad example is flagged as a <b>known fault</b>.
       Up to 20 of each are kept per part, the oldest dropped. Delete any that were answered by mistake.</p>
     ${wrong.length ? `<h3>THE REFERENCE SHOWS THESE WRONG</h3><p class="dim">A tester flagged them as wrong though the check passed them, so the reference turned round counts as their right look. Trust the reference again to undo it.</p>
@@ -707,8 +851,8 @@ async function showLearned(board) {
     ${refs.length ? refs.map(ref => `<h3>${esc(ref)} <span class="dim">${byRef[ref].length} example(s)</span></h3><div class="examples">${byRef[ref].map(e => `
       <div class="ex ${e.label}"><img loading="lazy" src="${exUrl(board, side, e.id)}" alt="${esc(e.ref)}, ${e.label}">
         <div class="grow"><span class="${e.label === "good" ? "st-ok" : "st-wrong"}">${e.label === "good" ? "GOOD · right way round" : "BAD · wrong"}</span>
-          ${e.note ? `<div>${esc(e.note)}</div>` : ""}
-          <div class="dim">${esc(e.serial || "no serial")} · ${esc(e.date)}${e.check ? ` · <a href="#" data-showck="${esc(e.check)}">check</a>` : ""}</div></div>
+          ${e.reason ? `<div class="st-wrong">${esc(reasonName(e.reason))}</div>` : ""}${e.note ? `<div>${esc(e.note)}</div>` : ""}
+          <div class="dim">${esc(e.serial || "no serial")} · ${esc(e.date)}${e.check ? ` · <a href="#" data-showck="${esc(e.check)}">check</a>` : e.source ? " · taught from a mapped photo" : ""}</div></div>
         <button data-delex="${esc(e.id)}" class="small">DELETE</button></div>`).join("")}</div>`).join("")
       : `<p class="dim">Nothing learned for the ${side} yet. Answer the flagged parts on Check a board and they appear here.</p>`}
     <p class="dim">Kept in <span class="mono">${esc(d.folder)}</span></p>`;
@@ -828,6 +972,8 @@ function renderCheck() {
     $("#ck-msg").hidden = !s.message; $("#ck-msg").textContent = s.message || "";
     $("#ck-points").hidden = !(s.photo && !s.aligned);
     if (s.photo && !s.aligned) loadCkAnchors();
+    $("#ck-look").hidden = !s.aligned;
+    if (s.aligned) loadPartList(c.reference);
     const fl = flaggedHtml(c, CK.side, true);
     $("#ck-flagged").innerHTML = s.aligned ? (fl ? `<h3>FLAGGED: LOOK AT EACH ONE</h3>${fl}` : `<p class="st-ok">Nothing flagged on the ${CK.side}.</p>`) : "";
     const ok = (s.results || []).filter(r => r.status === "ok" && !r.missed);
@@ -836,7 +982,7 @@ function renderCheck() {
       (byLearning.length ? `<p class="dim">Passed because they look like parts a tester confirmed: ${esc(byLearning.join(", "))}.</p>` : "") +
       (ok.length ? `<h3>DID THE CHECK MISS ONE?</h3><p class="dim">If one of these is wrong, flag it: it's kept as a bad example, and the reference's look of that part is no longer trusted.</p>
         <div class="row"><select id="ck-miss-ref">${ok.map(r => `<option>${esc(r.ref)}</option>`).join("")}</select>
-        <input id="ck-miss-note" class="note" placeholder="What's wrong"><button id="ck-miss" class="wrongbtn">FLAG AS WRONG</button></div>` : "") +
+        ${reasonSelect("reason").replace("<select ", `<select id="ck-miss-reason" `)}<input id="ck-miss-note" class="note" placeholder="Note (kept with the example)"><button id="ck-miss" class="wrongbtn">FLAG AS WRONG</button></div>` : "") +
       ((s.skipped || []).length ? `<h3>NOT CHECKED HERE (${s.skipped.length})</h3><p class="dim">Look at these by eye: ${esc(s.skipped.map(r => r.ref).join(", "))}.</p>` : "") : "";
   }
   renderCkViewer();
@@ -892,8 +1038,25 @@ function drawCkMarks() {
   svg.innerHTML = Object.entries(CK.pts).map(([ref, [x, y]]) => `<circle class="pt" cx="${x}" cy="${y}" r="${r}" style="stroke-width:${r / 4}"/><text x="${x + r * 1.3}" y="${y - r * 1.3}" style="font-size:${r * 2}px">${esc(ref)}</text>`).join("");
 }
 $("#ck-photo").addEventListener("load", drawCkMarks);
+const ckSrc = () => `check/${CK.st.check.uid}/${CK.side}`;
+function ckLook(ref) {
+  $("#ck-look-ref").value = ref;
+  showPart($("#ck-insp"), ckSrc(), ref, async () => { CK.st = await api("api/check/state"); renderCheck(); });
+}
+$("#ck-look-go").addEventListener("click", () => { const r = typedRef($("#ck-look-ref").value); if (r) ckLook(r); });
+$("#ck-look-ref").addEventListener("change", () => { const r = typedRef($("#ck-look-ref").value); if (r) ckLook(r); });
 $("#ck-photo").addEventListener("click", async e => {
-  const c = CK.st && CK.st.check; if (!c || c.sides[CK.side].aligned || !CK.anchors || !CK.anchors.prompts.length) return;
+  const c = CK.st && CK.st.check;
+  if (c && c.sides[CK.side].aligned) {        // pick a part on the result photo (lined up with the reference)
+    if (CK.view !== "result") return say("Switch to RESULT to pick a part on the photo.", true);
+    const b = e.target.getBoundingClientRect();
+    try {
+      const r = await post("api/part/pick", { src: ckSrc(), fx: (e.clientX - b.left) / b.width, fy: (e.clientY - b.top) / b.height });
+      if (r.ref) ckLook(r.ref); else say("No part there. Click on a part's body.", true);
+    } catch (err) { say(err.message, true); }
+    return;
+  }
+  if (!c || !CK.anchors || !CK.anchors.prompts.length) return;
   const img = e.target, b = img.getBoundingClientRect(), k = img.naturalWidth / b.width;
   const xy = [(e.clientX - b.left) * k, (e.clientY - b.top) * k];
   const p = CK.anchors.prompts[CK.cur]; if (!p) return;
@@ -907,22 +1070,24 @@ $("#ck-align").addEventListener("click", () => ckAct(() => post(`api/check/side/
 $("#ck-sides").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.side = b.dataset.side; CK.view = "result"; renderCheck(); } });
 $("#ck-view").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.view = b.dataset.v; renderCkViewer(); } });
 const ckNote = ref => { const i = $$("#ck-flagged [data-note]").find(x => x.dataset.note === ref); return i ? i.value : ""; };
+const ckReason = ref => { const i = $$("#ck-flagged [data-reason]").find(x => x.dataset.reason === ref); return i ? i.value : ""; };
 $("#ck-flagged").addEventListener("click", e => {
   const b = e.target.closest("[data-ans]"); if (!b) return;
   const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === b.dataset.ref);
   const ans = cur && cur.answer === b.dataset.ans ? null : b.dataset.ans;
-  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans, note: ckNote(b.dataset.ref), missed: !!(cur && cur.missed) }),
+  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans, note: ckNote(b.dataset.ref), reason: ckReason(b.dataset.ref), missed: !!(cur && cur.missed) }),
     ans ? `Learned: ${b.dataset.ref} kept as a ${ans === "correct" ? "good" : "bad"} example.` : `${b.dataset.ref}: answer cleared and its example forgotten.`);
 });
 $("#ck-flagged").addEventListener("change", e => {
-  const i = e.target.closest("[data-note]"); if (!i) return;
-  const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === i.dataset.note);
-  if (cur && cur.answer === "wrong") ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: cur.ref, answer: "wrong", note: i.value, missed: !!cur.missed }), "Note saved with the example.");
+  const i = e.target.closest("[data-note], [data-reason]"); if (!i) return;
+  const ref = i.dataset.note || i.dataset.reason;
+  const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === ref);
+  if (cur && cur.answer) ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref, answer: cur.answer, note: ckNote(ref), reason: ckReason(ref), missed: !!cur.missed }), "Saved with the example.");
 });
 $("#ck-ok").addEventListener("click", e => {
   if (!e.target.closest("#ck-miss")) return;
   const ref = $("#ck-miss-ref").value;
-  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref, answer: "wrong", note: $("#ck-miss-note").value, missed: true }),
+  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref, answer: "wrong", note: $("#ck-miss-note").value, reason: $("#ck-miss-reason").value, missed: true }),
     `${ref} flagged as wrong. The check will look for this next time.`);
 });
 $("#ck-learned").addEventListener("click", () => { const c = CK.st && CK.st.check; setHistKind("learned", false); H.sel = c ? c.board : null; H.lside = CK.side; goTab("history"); });

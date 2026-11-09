@@ -17,7 +17,8 @@ FIELDS = {
 }
 
 KINDS = {"tantalum": "Tantalum capacitor", "electrolytic": "Electrolytic capacitor", "diode": "Diode",
-         "led": "LED", "ic": "IC (pin 1)", "other": "Other polarised part"}
+         "led": "LED", "ic": "IC (pin 1)", "other": "Other polarised part",
+         "look": "Check its look (no polarity mark)"}
 
 # Default keyword rules, checked in order against the upper-cased description, value and type.
 DEFAULT_RULES = [
