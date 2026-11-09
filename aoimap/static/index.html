@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AOI Parts Mapper</title>
-<link rel="stylesheet" href="static/app.css">
+<link rel="stylesheet" href="static/app.css?v=learn1">
 </head>
 <body>
 <div class="panel">
@@ -238,7 +238,10 @@
           </div>
           <div id="ck-flagged"></div>
           <div id="ck-ok"></div>
-          <div class="row"><button id="ck-new">CHECK ANOTHER BOARD</button><button data-goto="history" data-hist="checks">PAST CHECKS</button></div>
+          <div class="row"><button id="ck-new">CHECK ANOTHER BOARD</button><button data-goto="history" data-hist="checks">PAST CHECKS</button>
+            <button id="ck-learned">WHAT THE CHECK HAS LEARNED</button></div>
+          <p class="dim">Every answer teaches the check: Right way round keeps that part as a good example, Wrong as a bad one with
+            your note. Next time a part like a good example isn't flagged, and one like a bad example is flagged as a known fault.</p>
         </div>
       </div>
     </div>
@@ -248,11 +251,11 @@
   <section id="tab-history" class="tab" hidden>
     <div class="cols">
       <div class="col">
-        <div class="row"><div class="seg" id="hist-kind"><button data-k="projects" class="on">MAPPED BOARDS</button><button data-k="checks">CHECKS</button></div></div>
+        <div class="row"><div class="seg" id="hist-kind"><button data-k="projects" class="on">MAPPED BOARDS</button><button data-k="checks">CHECKS</button><button data-k="learned">LEARNED</button></div></div>
         <div class="row"><input id="hist-search" placeholder="Board, serial, notes or file name (* matches any part)"></div>
         <p class="dim" id="hist-status"></p>
         <div class="tablewrap"><table id="hist-list"><thead><tr>
-          <th>Updated</th><th>Board</th><th>Serial</th><th id="hist-c4">Front</th><th id="hist-c5">Back</th></tr></thead><tbody></tbody></table></div>
+          <th id="hist-c1">Updated</th><th id="hist-c2">Board</th><th id="hist-c3">Serial</th><th id="hist-c4">Front</th><th id="hist-c5">Back</th></tr></thead><tbody></tbody></table></div>
       </div>
       <div class="col wide" id="hist-detail">
         <p class="dim">Choose a project to see its files, photos and log.</p>
@@ -261,6 +264,6 @@
   </section>
   <i class="screw bl"></i><i class="screw br"></i>
 </div>
-<script src="static/app.js"></script>
+<script src="static/app.js?v=learn1"></script>
 </body>
 </html>

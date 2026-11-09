@@ -88,7 +88,15 @@ td a:hover { text-decoration: underline; }
 .flag figure { margin: 0; font-size: 11px; text-align: center; color: var(--dimInk); }
 .flag img { display: block; width: 130px; height: 130px; object-fit: contain; background: var(--panelEdge); border-radius: 3px; }
 .flag button.on.wrong { background: #C0392B; color: #fff; }
-.st-ok { color: #6FCF73; } .st-reversed, .st-rotated, .st-wrong { color: #FF6B5B; font-weight: 700; } .st-check { color: var(--accent); }
+.flag input.note, input#ck-miss-note { flex: 1; min-width: 160px; }
+.flag .learnt { font-size: 11px; margin-top: 4px; }
+button.wrongbtn { border-color: #C0392B; }
+.examples { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; }
+.ex { display: flex; gap: 8px; align-items: flex-start; border: 1px solid var(--panelEdge); border-left: 3px solid #3E8E41; border-radius: 4px; padding: 6px; font-size: 12px; }
+.ex.bad { border-left-color: #C0392B; }
+.ex img { width: 84px; height: 84px; object-fit: contain; background: var(--panelEdge); border-radius: 3px; flex: none; }
+.ex .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.st-ok { color: #6FCF73; } .st-fault, .st-reversed, .st-rotated, .st-wrong { color: #FF6B5B; font-weight: 700; } .st-check { color: var(--accent); }
 .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
 .gallery a { display: block; color: var(--dimInk); text-decoration: none; font-size: 12px; text-align: center; }

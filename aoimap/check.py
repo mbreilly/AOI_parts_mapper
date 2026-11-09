@@ -8,15 +8,21 @@ part on the reference as placed and turned round. A part that matches the turned
 is flagged as reversed; one that matches neither is flagged to be looked at. The user answers each
 flagged part. This is a quick look before work starts on a board, not a production test.
 
-The method is the PTC QC station's orientation check (ptctestsuite/utils/inspection.py).
+The method is the PTC QC station's orientation check (ptctestsuite/utils/inspection.py), and so is
+the learning: every answer is kept as a good or bad example of that part (see "learned examples").
 
     <data>/checks/<uid>/
         check.json              board, reference project, serial, notes, every part's result and answer, log
         front/ back/            photo.jpg (as taken), aligned.jpg (lined up with the reference), result.jpg
+    <data>/learned/<board>/<side>/
+        examples.json           the examples, and the parts each reference shows wrong
+        <id>.jpg                each example: the part's area of a lined-up photo
 """
 
 import json
 import re
+import secrets
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -33,9 +39,12 @@ REVERSE_MARGIN = 0.10       # a quarter turn must match this much better to flag
 MIN_MATCH = 0.60            # below this a part doesn't look like the reference: "look at it"
 MARK_STRENGTH = 0.15        # a reference part with less difference end to end than this shows no mark
 MARK_MIN = 0.30             # the polarity mark must agree (or disagree) at least this much to decide
+LEARNED_MARGIN = 0.03       # a learned example must match this much better than the other kind to decide
+MAX_EXAMPLES = 20           # learned examples of each kind (good, bad) kept for each part; the oldest go first
 # These come from the PTC station's photos; tune them on real boards.
 
-STATUS_COLOURS = {"ok": (80, 190, 80), "reversed": (60, 60, 230), "rotated": (60, 60, 230), "check": (40, 170, 240)}
+STATUS_COLOURS = {"ok": (80, 190, 80), "reversed": (60, 60, 230), "rotated": (60, 60, 230), "check": (40, 170, 240),
+                  "fault": (60, 60, 230)}   # fault: looks like a learned bad example (a known fault)
 
 
 def root(data: Path) -> Path:
@@ -98,6 +107,121 @@ def references(data: Path) -> list[dict]:
     return sorted(out, key=lambda r: r["marked"] or r["created"], reverse=True)
 
 
+# ---- learned examples ----------------------------------------------------------------------
+# Every answer the tester gives teaches the check: a flagged part answered Right way round is kept as
+# a good example of that part, and a part answered Wrong (flagged by the check, or one it missed) as a
+# bad example with the tester's note. Later boards of the same design are compared with these as well
+# as the reference, so a false alarm confirmed once isn't raised again and a fault seen once is
+# flagged as a known fault. When the tester flags a part the check passed, that reference shows the
+# part wrong, so its look there no longer counts as right (the reference turned round does instead).
+# Clearing an answer forgets its example; the History tab lists them all to look over and delete.
+
+def learned_dir(data: Path, board: str, side: str) -> Path:
+    if side not in pj.SIDES:
+        raise ValueError("No such side.")
+    return Path(data) / "learned" / pj.slug(board) / side
+
+
+def load_examples(data: Path, board: str, side: str) -> dict:
+    """{"examples": [{id, ref, label: good|bad, note, serial, check, date, file}],
+    "reference_wrong": {reference uid: [ref, ...]}}"""
+    d = pj._read_json(learned_dir(data, board, side) / "examples.json", {}) or {}
+    return {"examples": d.get("examples", []), "reference_wrong": d.get("reference_wrong", {})}
+
+
+def _save_examples(data: Path, board: str, side: str, d: dict):
+    learned_dir(data, board, side).mkdir(parents=True, exist_ok=True)
+    pj._write_json(learned_dir(data, board, side) / "examples.json", {"board": board, **d})
+
+
+def example_path(data: Path, board: str, side: str, ex_id: str) -> Path:
+    ex = next((e for e in load_examples(data, board, side)["examples"] if e["id"] == ex_id), None)
+    f = learned_dir(data, board, side) / ex["file"] if ex else None
+    if not f or not f.is_file():
+        raise ValueError("No such example.")
+    return f
+
+
+def add_example(data: Path, board: str, side: str, aligned, box, ref: str, label: str, note: str = "",
+                serial: str = "", check: str = "") -> str | None:
+    """Keeps an area of a lined-up photo as a good or bad example of a part. Its id, or None."""
+    x, y, w, h = (int(v) for v in box)
+    crop = aligned[max(0, y):y + h, max(0, x):x + w]
+    if crop.size == 0:
+        return None
+    d = load_examples(data, board, side)
+    ex_id = f"{pj.slug(ref)}-{label}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+    learned_dir(data, board, side).mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(learned_dir(data, board, side) / f"{ex_id}.jpg"), crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    d["examples"].append({"id": ex_id, "ref": ref, "label": label, "note": note.strip()[:500], "serial": serial,
+                          "check": check, "date": pj.now()[:16], "file": f"{ex_id}.jpg"})
+    same = [e for e in d["examples"] if e["ref"] == ref and e["label"] == label]
+    for old in same[:-MAX_EXAMPLES]:
+        _drop(data, board, side, d, old["id"])
+    _save_examples(data, board, side, d)
+    return ex_id
+
+
+def _drop(data, board, side, d, ex_id) -> bool:
+    ex = next((e for e in d["examples"] if e["id"] == ex_id), None)
+    if ex:
+        d["examples"].remove(ex)
+        (learned_dir(data, board, side) / ex["file"]).unlink(missing_ok=True)
+    return bool(ex)
+
+
+def delete_example(data: Path, board: str, side: str, ex_id: str):
+    d = load_examples(data, board, side)
+    if _drop(data, board, side, d, ex_id):
+        _save_examples(data, board, side, d)
+
+
+def set_note(data: Path, board: str, side: str, ex_id: str, note: str):
+    d = load_examples(data, board, side)
+    ex = next((e for e in d["examples"] if e["id"] == ex_id), None)
+    if ex:
+        ex["note"] = note.strip()[:500]
+        _save_examples(data, board, side, d)
+
+
+def set_reference_wrong(data: Path, board: str, side: str, reference: str, ref: str, wrong: bool = True):
+    d = load_examples(data, board, side)
+    refs = set(d["reference_wrong"].get(reference, []))
+    refs = refs | {ref} if wrong else refs - {ref}
+    if refs:
+        d["reference_wrong"][reference] = sorted(refs)
+    else:
+        d["reference_wrong"].pop(reference, None)
+    _save_examples(data, board, side, d)
+
+
+def example_images(data: Path, board: str, side: str) -> dict:
+    """{ref: {"good": [(image, example)], "bad": [(image, example)]}} for check_part."""
+    out = {}
+    for e in load_examples(data, board, side)["examples"]:
+        im = cv2.imread(str(learned_dir(data, board, side) / e["file"]))
+        if im is not None:
+            out.setdefault(e["ref"], {"good": [], "bad": []})[e["label"]].append((im.astype(np.float32), e))
+    return out
+
+
+def _learned_match(area, ex, size):
+    """How well a learned example matches a part: the best fit near where it should be, or -1 when
+    the example's polarity mark points the other way (so a reversed part's example doesn't stand for
+    the part the right way round, and the other way about)."""
+    w, h = size
+    t = ex if (ex.shape[1], ex.shape[0]) == (w, h) else cv2.resize(ex, (w, h), interpolation=cv2.INTER_AREA)
+    if area.shape[0] < h or area.shape[1] < w or float(t.std()) < 1e-3:
+        return -1.0
+    _, s, _, (bx, by) = cv2.minMaxLoc(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))
+    anti = (t - cv2.rotate(t, cv2.ROTATE_180)) / 2
+    if float(anti.std() / (t.std() + 1e-6)) > MARK_STRENGTH:
+        patch = area[by:by + h, bx:bx + w]
+        if _ncc((patch - cv2.rotate(patch, cv2.ROTATE_180)) / 2, anti) <= 0:
+            return -1.0
+    return float(s)
+
+
 # ---- lining up and comparing ----------------------------------------------------------------
 
 def _gray(img):
@@ -153,14 +277,19 @@ def _ncc(a, b) -> float:
     return float((a * b).sum() / d) if d > 1e-6 else 0.0
 
 
-def check_part(aligned, ref, part: dict, margin: int) -> dict:
+def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = None, reference_wrong: bool = False) -> dict:
     """Compares a part on the lined-up photo with the reference.
 
     The part is first found near where the reference has it, as placed or turned round, whichever
     fits best. Then what changes when it's turned round (a band, a + or a pin 1 dot: the difference
     between the part and itself turned round) is compared with the reference's: it correlates
     positively when the part is the same way round, negatively when it's reversed, and near zero
-    when the mark can't be seen."""
+    when the mark can't be seen.
+
+    Then the learned examples of the part, {"good": [(image, example)], "bad": [...]}, are compared
+    too: a part that looks like a known fault is flagged "fault"; a flagged part that looks like one
+    the tester confirmed right way round passes. reference_wrong: a tester said the reference shows
+    this part wrong, so the reference turned round is its right look."""
     x, y, w, h = (int(round(v)) for v in part["box"])
     # with some of the board round the part, so the template can't slide off it and still match
     e = max(3, int(0.3 * min(w, h)))
@@ -182,6 +311,7 @@ def check_part(aligned, ref, part: dict, margin: int) -> dict:
     # a part turned round sits on the same pads, so it's found with the turned template
     best = max((cv2.minMaxLoc(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))[1::2] for t in (body, turned)), key=lambda v: v[0])
     bx, by = best[1]
+    out["at"] = [ax + bx, ay + by, w, h]    # where the part (with some board round it) is on the lined-up photo
     patch = area[by:by + h, bx:bx + w]
     pt = cv2.rotate(patch, cv2.ROTATE_180)
     same, rev = _ncc(patch, body), _ncc(patch, turned)
@@ -209,12 +339,29 @@ def check_part(aligned, ref, part: dict, margin: int) -> dict:
         out.update(status="check", why="no mark shows on the reference photo, so look at it by eye")
     else:
         out.update(status="check", why="its mark can't be made out in this photo")
+    if reference_wrong and out["status"] in ("ok", "reversed"):
+        out.update(status="ok", why="the right way round: the reference shows this part wrong") if out["status"] == "reversed" else \
+            out.update(status="reversed", why="looks like the reference, which shows this part the wrong way round")
+    learned = learned or {}
+    good = [(_learned_match(area, im, (w, h)), e) for im, e in learned.get("good", [])]
+    bad = [(_learned_match(area, im, (w, h)), e) for im, e in learned.get("bad", [])]
+    # the closest right look: confirmed-good examples and the reference (turned round if it shows the part wrong)
+    best_good = max([v for v, _ in good] + [rev if reference_wrong else same])
+    best_bad, bad_ex = max(bad, key=lambda v: v[0]) if bad else (-1.0, None)
+    if best_bad >= MIN_MATCH and best_bad > best_good + LEARNED_MARGIN:
+        seen = " ".join(v for v in (bad_ex.get("serial"), bad_ex.get("date", "")[:10]) if v)
+        out.update(status="fault", learned="bad", why=f"looks like a fault seen before ({seen})" + (f": {bad_ex['note']}" if bad_ex["note"] else ""))
+    elif out["status"] != "ok" and good:
+        g, ex = max(good, key=lambda v: v[0])
+        if g >= MIN_MATCH and g > best_bad + LEARNED_MARGIN:
+            seen = " ".join(v for v in (ex.get("serial"), ex.get("date", "")[:10]) if v)
+            out.update(status="ok", learned="good", why=f"looks like a part confirmed right way round ({seen})")
     return out
 
 
 def overlay(img, results, width: int = 1600) -> bytes:
     """The lined-up photo with each part outlined: green fine, red reversed, orange to look at.
-    A flagged part answered "correct" turns green, "wrong" red."""
+    A flagged part answered "correct" turns green, "wrong" (or a missed part) red."""
     s = min(1.0, width / img.shape[1])
     vis = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
     t = max(2, int(3 * vis.shape[1] / 1600))
@@ -222,7 +369,7 @@ def overlay(img, results, width: int = 1600) -> bytes:
         x, y, w, h = (int(v * s) for v in r["box"])
         st = {"correct": "ok", "wrong": "reversed"}.get(r.get("answer"), r["status"])
         cv2.rectangle(vis, (x - 3, y - 3), (x + w + 3, y + h + 3), STATUS_COLOURS[st], t)
-        if r["status"] != "ok":
+        if r["status"] != "ok" or r.get("answer"):
             cv2.putText(vis, r["ref"], (x, max(14, y - 7)), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * vis.shape[1] / 1600 + 0.2,
                         STATUS_COLOURS[st], 2)
     ok, buf = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -415,7 +562,9 @@ class Checks:
         aligned = cv2.warpPerspective(self._photo(side), np.asarray(H, np.float64), (ref.shape[1], ref.shape[0]))
         parts, skipped = self._ref_parts(side)
         margin = max(8, int(0.004 * ref.shape[1]))
-        results = [check_part(aligned, ref, p, margin) for p in parts]
+        learned = example_images(self.data, self.cur["board"], side)
+        wrong = set(load_examples(self.data, self.cur["board"], side)["reference_wrong"].get(self.cur["reference"], []))
+        results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong) for p in parts]
         if results and np.median([max(r["score"], r["turned"]) for r in results]) < 0.45 and not (force and len(results) < 3):
             return False
         d = folder(self.data, self.cur["uid"]) / side
@@ -428,18 +577,92 @@ class Checks:
                     + (f"{len(flagged)} flagged ({', '.join(flagged[:12])}{' ...' if len(flagged) > 12 else ''})" if flagged else "none flagged"))
         return True
 
-    def answer(self, side, ref, answer):
+    def answer(self, side, ref, answer, note=None, missed=False):
+        """The tester's answer for a part, which also teaches the check (see learned examples). A
+        part the check passed can be answered wrong: it missed it. A changed or cleared answer
+        forgets the example the old one made."""
         st = self._need(side)
         if answer not in ("correct", "wrong", None, ""):
             raise ValueError("Answer correct or wrong.")
         r = next((r for r in st.get("results", []) if r["ref"] == ref), None)
         if not r:
             raise ValueError(f"{ref} isn't checked on this side.")
-        r["answer"] = answer or None
-        img = self._aligned(self.cur["uid"], side)
-        (folder(self.data, self.cur["uid"]) / side / "result.jpg").write_bytes(overlay(img, st["results"]))
-        self._touch(f"{side.capitalize()} {ref}: " + ({"correct": "looked at, it's the right way round",
-                                                         "wrong": "WRONG way round"}.get(answer) or "answer cleared"))
+        answer = answer or None
+        c, board = self.cur, self.cur["board"]
+        if r["status"] == "ok" and answer == "correct":
+            raise ValueError(f"{ref} wasn't flagged.")
+        if r["status"] != "ok":
+            missed = False
+        elif answer is None:
+            missed = r.get("missed", False)
+        note = (r.get("note", "") if note is None else note).strip()[:500]
+        if answer == r.get("answer") and r.get("example"):   # the same answer again: only the note can change
+            if note != r.get("note", ""):
+                r["note"] = note
+                set_note(self.data, board, side, r["example"], note)
+                self._touch(f"{side.capitalize()} {ref}: note set to “{note}”" if note else f"{side.capitalize()} {ref}: note cleared")
+            return
+        if r.get("example"):
+            delete_example(self.data, board, side, r.pop("example"))
+        if r.pop("missed", False):
+            set_reference_wrong(self.data, board, side, c["reference"], ref, False)
+        r["answer"], r["note"] = answer, note if answer == "wrong" else ""
+        img = self._aligned(c["uid"], side)
+        if answer:
+            box = r.get("at") or self._box_round(side, r)
+            r["example"] = add_example(self.data, board, side, img, box, ref, "good" if answer == "correct" else "bad",
+                                       r["note"], c.get("serial", ""), c["uid"])
+            if missed:
+                r["missed"] = True
+                set_reference_wrong(self.data, board, side, c["reference"], ref)
+        (folder(self.data, c["uid"]) / side / "result.jpg").write_bytes(overlay(img, st["results"]))
+        what = {"correct": "looked at, it's the right way round", "wrong": "WRONG way round"}.get(answer) or "answer cleared"
+        if missed and answer:
+            what = "WRONG, though the check passed it (the reference's look of it is no longer trusted)"
+        self._touch(f"{side.capitalize()} {ref}: {what}" + (f" ({r['note']})" if answer == "wrong" and r["note"] else ""))
+
+    def _box_round(self, side, r):
+        """A part's box with some board round it, as check_part compares it (for checks made before
+        results kept where the part was found)."""
+        x, y, w, h = r["box"]
+        e = max(3, int(0.3 * min(w, h)))
+        return [max(0, x - e), max(0, y - e), w + 2 * e, h + 2 * e]
+
+    def learned(self, board: str, side: str) -> dict:
+        """What the check has learned for a board design's side, for the page."""
+        d = load_examples(self.data, board, side)
+        return {"board": board, "side": side, "folder": str(learned_dir(self.data, board, side).resolve()),
+                "examples": sorted(d["examples"], key=lambda e: e["date"], reverse=True),
+                "reference_wrong": d["reference_wrong"]}
+
+    def learned_boards(self) -> list[dict]:
+        """Board designs with a reference or anything learned, with how many examples each side has."""
+        names = {r["board"] for r in references(self.data)} | ({self.cur["board"]} if self.cur else set())
+        lr = Path(self.data) / "learned"
+        for f in lr.glob("*/*/examples.json") if lr.is_dir() else ():
+            names.add((pj._read_json(f, {}) or {}).get("board") or f.parent.parent.name)
+        out = []
+        for n in sorted(names):
+            row = {"board": n}
+            for s in pj.SIDES:
+                d = load_examples(self.data, n, s)
+                row[s] = {"good": sum(e["label"] == "good" for e in d["examples"]),
+                          "bad": sum(e["label"] == "bad" for e in d["examples"]),
+                          "reference_wrong": sum(len(v) for v in d["reference_wrong"].values())}
+            out.append(row)
+        return out
+
+    def forget(self, board: str, side: str, ex_id: str):
+        """Deletes a learned example, and the answer that made it stops pointing at it."""
+        delete_example(self.data, board, side, ex_id)
+        if self.cur and self.cur["board"] == board:
+            for r in self.cur["sides"].get(side, {}).get("results", []):
+                if r.get("example") == ex_id:
+                    r.pop("example")
+            save(self.data, self.cur)
+
+    def trust_reference(self, board: str, side: str, reference: str, ref: str):
+        set_reference_wrong(self.data, board, side, reference, ref, False)
 
     def set_info(self, uid, serial=None, notes=None):
         same = self.cur and self.cur["uid"] == uid

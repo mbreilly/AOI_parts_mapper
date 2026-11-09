@@ -189,6 +189,12 @@ def make_handler(app: App):
             c = app.checks
             if r == ["state"]:
                 return self._json(c.state())
+            if r == ["learned"]:
+                return self._json({"boards": c.learned_boards()})
+            if len(r) == 3 and r[0] == "learned":
+                return self._json(c.learned(r[1], r[2]))
+            if len(r) == 4 and r[0] == "learned":
+                return self._send(200, ck.example_path(app.board.data, r[1], r[2], r[3]).read_bytes(), "image/jpeg", cache=True)
             if len(r) == 3 and r[0] == "side" and r[2] == "anchors":
                 return self._json(c.anchors(r[1]))
             if len(r) == 1:
@@ -225,9 +231,16 @@ def make_handler(app: App):
                     c.align_points(side, self._jbody()["points"])
                 elif what == "answer":
                     j = self._jbody()
-                    c.answer(side, j["ref"], j.get("answer"))
+                    c.answer(side, j["ref"], j.get("answer"), j.get("note"), bool(j.get("missed")))
                 else:
                     return self._err("Not found", 404)
+            elif len(r) == 4 and r[0] == "learned" and r[3] in ("delete", "trust"):
+                j = self._jbody()
+                if r[3] == "delete":
+                    c.forget(r[1], r[2], j["id"])
+                else:
+                    c.trust_reference(r[1], r[2], j["reference"], j["ref"])
+                return self._json(c.learned(r[1], r[2]))
             elif len(r) == 2 and r[1] == "info":
                 j = self._jbody()
                 c.set_info(r[0], j.get("serial"), j.get("notes"))

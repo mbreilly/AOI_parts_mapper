@@ -577,8 +577,9 @@ const H = { q: "", sel: null, list: [], timer: null, kind: "projects" };
 function setHistKind(k, load = true) {
   if (H.kind !== k) { H.kind = k; H.sel = null; $("#hist-detail").innerHTML = ""; }
   $$("#hist-kind button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
-  $("#hist-c4").textContent = k === "checks" ? "Result" : "Front";
-  $("#hist-c5").textContent = k === "checks" ? "Flagged" : "Back";
+  const cols = { projects: ["Updated", "Board", "Serial", "Front", "Back"], checks: ["Updated", "Board", "Serial", "Result", "Flagged"],
+    learned: ["Board", "Front good", "Front bad", "Back good", "Back bad"] }[k];
+  cols.forEach((t, i) => { $(`#hist-c${i + 1}`).textContent = t; });
   if (load) loadHistory();
 }
 $("#hist-kind").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setHistKind(b.dataset.k); });
@@ -586,6 +587,7 @@ const kb = n => n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(
 const fileUrl = (uid, path, extra = "") => `api/history/${encodeURIComponent(uid)}/file/${path.split("/").map(encodeURIComponent).join("/")}${extra}`;
 async function loadHistory() {
   if (H.kind === "checks") return loadChecks();
+  if (H.kind === "learned") return loadLearned();
   try {
     const h = await api(`api/history?limit=200&q=${encodeURIComponent(H.q)}`);
     H.list = h.projects;
@@ -601,7 +603,7 @@ async function loadHistory() {
 }
 const sideCell = s => !s.parts ? `<span class="dim">none</span>` : s.aligned ? `${s.checkable}/${s.parts}` : s.photo ? "photo" : `<span class="dim">–</span>`;
 $("#hist-search").addEventListener("input", e => { H.q = e.target.value; clearTimeout(H.timer); H.timer = setTimeout(loadHistory, 300); });
-$("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[data-uid]"); if (tr) (H.kind === "checks" ? showCheck : showProject)(tr.dataset.uid); });
+$("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[data-uid]"); if (tr) ({ checks: showCheck, learned: showLearned }[H.kind] || showProject)(tr.dataset.uid); });
 
 async function loadChecks() {
   try {
@@ -617,19 +619,21 @@ async function loadChecks() {
   } catch (e) { say(e.message, true); }
 }
 
-const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it" };
+const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it", fault: "known fault" };
 const ckFile = (uid, side, name, extra = "") => `api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
 const ckCrop = (uid, side, ref, which) => `api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
 function flaggedHtml(c, side, editable) {
-  const st = c.sides[side] || {}, rs = (st.results || []).filter(r => r.status !== "ok");
+  const st = c.sides[side] || {}, rs = (st.results || []).filter(r => r.status !== "ok" || r.missed);
   return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
-      <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · <span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>
+      <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · ${r.missed ? `<span class="st-wrong">missed by the check</span>` : `<span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>`}
         <div class="dim">${esc(r.why || "")}</div></div>
       <div class="pics"><figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "reference")}" alt="">reference</figure>
         <figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "board")}" alt="">this board</figure></div>
-      ${editable ? `<div class="row"><button data-ans="correct" data-ref="${esc(r.ref)}" class="${r.answer === "correct" ? "on" : ""}">RIGHT WAY ROUND</button>
-        <button data-ans="wrong" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" ? "on wrong" : ""}">WRONG</button></div>`
-      : `<div>${r.answer === "wrong" ? `<span class="st-wrong">Answered: wrong</span>` : r.answer === "correct" ? "Answered: right way round" : `<span class="st-check">Not answered</span>`}</div>`}
+      ${editable ? `<div class="row">${r.missed ? "" : `<button data-ans="correct" data-ref="${esc(r.ref)}" class="${r.answer === "correct" ? "on" : ""}">RIGHT WAY ROUND</button>`}
+        <button data-ans="wrong" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" ? "on wrong" : ""}">WRONG</button>
+        <input class="note" data-note="${esc(r.ref)}" value="${esc(r.note || "")}" placeholder="What's wrong (kept with what the check learns)"></div>
+        ${r.answer ? `<div class="dim learnt">Learned as a ${r.answer === "correct" ? "good" : "bad"} example of ${esc(r.ref)}${r.example ? "" : " (since deleted)"}.</div>` : ""}`
+      : `<div>${r.answer === "wrong" ? `<span class="st-wrong">Answered: wrong${r.note ? " · " + esc(r.note) : ""}</span>` : r.answer === "correct" ? "Answered: right way round" : `<span class="st-check">Not answered</span>`}</div>`}
     </div>`).join("");
 }
 
@@ -663,6 +667,61 @@ document.addEventListener("click", e => {
   const pr = e.target.closest("[data-showproj]");
   if (pr) { e.preventDefault(); setHistKind("projects", false); H.sel = pr.dataset.showproj; loadHistory(); }
 });
+
+// what the check has learned, per board design and side
+async function loadLearned() {
+  try {
+    const h = await api("api/check/learned"), q = H.q.toLowerCase();
+    const rows = h.boards.filter(b => !q || b.board.toLowerCase().includes(q));
+    $("#hist-status").textContent = "Examples the testers' answers have taught the board check, per board design.";
+    $("#hist-list tbody").innerHTML = rows.map(b => `<tr class="click ${b.board === H.sel ? "sel" : ""}" data-uid="${esc(b.board)}">
+      <td>${esc(b.board)}</td><td>${b.front.good}</td><td>${b.front.bad ? `<span class="st-wrong">${b.front.bad}</span>` : 0}</td>
+      <td>${b.back.good}</td><td>${b.back.bad ? `<span class="st-wrong">${b.back.bad}</span>` : 0}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No board types yet."}</td></tr>`;
+    if (!rows.some(b => b.board === H.sel)) H.sel = rows.length ? rows[0].board : null;
+    if (H.sel) showLearned(H.sel);
+  } catch (e) { say(e.message, true); }
+}
+const exUrl = (board, side, id) => `api/check/learned/${encodeURIComponent(board)}/${side}/${encodeURIComponent(id)}`;
+async function showLearned(board) {
+  H.sel = board; H.lside = H.lside || "front";
+  $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === board));
+  const side = H.lside;
+  let d;
+  try { d = await api(`api/check/learned/${encodeURIComponent(board)}/${side}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
+  if (H.sel !== board || H.lside !== side) return;
+  const byRef = {};
+  d.examples.forEach(e => (byRef[e.ref] = byRef[e.ref] || []).push(e));
+  const refs = Object.keys(byRef).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const wrong = Object.entries(d.reference_wrong);
+  $("#hist-detail").innerHTML = `
+    <h2>WHAT THE CHECK HAS LEARNED  ·  ${esc(board)}</h2>
+    <div class="row"><div class="seg" id="lr-side">${["front", "back"].map(s => `<button data-s="${s}" class="${s === side ? "on" : ""}">${s.toUpperCase()}</button>`).join("")}</div>
+      <span class="dim">${d.examples.filter(e => e.label === "good").length} good · ${d.examples.filter(e => e.label === "bad").length} bad</span></div>
+    <p class="dim">Each answer on Check a board is kept here: a flagged part answered <b>Right way round</b> as a good example, one
+      answered <b>Wrong</b> (or flagged as missed) as a bad example with its note. Later boards of this design are compared with these as
+      well as the reference: a part like a good example isn't flagged again, and one like a bad example is flagged as a <b>known fault</b>.
+      Up to 20 of each are kept per part, the oldest dropped. Delete any that were answered by mistake.</p>
+    ${wrong.length ? `<h3>THE REFERENCE SHOWS THESE WRONG</h3><p class="dim">A tester flagged them as wrong though the check passed them, so the reference turned round counts as their right look. Trust the reference again to undo it.</p>
+      ${wrong.map(([ref, rs]) => `<div class="row"><span class="dim">reference ${esc(ref)}:</span>${rs.map(r => `<button data-trust="${esc(r)}" data-reference="${esc(ref)}" title="Trust the reference for this part again">${esc(r)} ✕</button>`).join("")}</div>`).join("")}` : ""}
+    ${refs.length ? refs.map(ref => `<h3>${esc(ref)} <span class="dim">${byRef[ref].length} example(s)</span></h3><div class="examples">${byRef[ref].map(e => `
+      <div class="ex ${e.label}"><img loading="lazy" src="${exUrl(board, side, e.id)}" alt="${esc(e.ref)}, ${e.label}">
+        <div class="grow"><span class="${e.label === "good" ? "st-ok" : "st-wrong"}">${e.label === "good" ? "GOOD · right way round" : "BAD · wrong"}</span>
+          ${e.note ? `<div>${esc(e.note)}</div>` : ""}
+          <div class="dim">${esc(e.serial || "no serial")} · ${esc(e.date)}${e.check ? ` · <a href="#" data-showck="${esc(e.check)}">check</a>` : ""}</div></div>
+        <button data-delex="${esc(e.id)}" class="small">DELETE</button></div>`).join("")}</div>`).join("")
+      : `<p class="dim">Nothing learned for the ${side} yet. Answer the flagged parts on Check a board and they appear here.</p>`}
+    <p class="dim">Kept in <span class="mono">${esc(d.folder)}</span></p>`;
+  $("#lr-side").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { H.lside = b.dataset.s; showLearned(board); } });
+  $$("#hist-detail [data-delex]").forEach(b => b.addEventListener("click", async () => {
+    if (!confirm("Delete this example? The check stops using it.")) return;
+    try { await post(`api/check/learned/${encodeURIComponent(board)}/${side}/delete`, { id: b.dataset.delex }); say("Example deleted."); loadLearned(); } catch (e) { say(e.message, true); }
+  }));
+  $$("#hist-detail [data-trust]").forEach(b => b.addEventListener("click", async () => {
+    try { await post(`api/check/learned/${encodeURIComponent(board)}/${side}/trust`, { reference: b.dataset.reference, ref: b.dataset.trust }); say(`The reference is trusted again for ${b.dataset.trust}.`); showLearned(board); } catch (e) { say(e.message, true); }
+  }));
+  $$("#hist-detail [data-showck]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); setHistKind("checks", false); H.sel = a.dataset.showck; loadHistory(); }));
+}
 
 async function showProject(uid) {
   H.sel = uid;
@@ -771,8 +830,13 @@ function renderCheck() {
     if (s.photo && !s.aligned) loadCkAnchors();
     const fl = flaggedHtml(c, CK.side, true);
     $("#ck-flagged").innerHTML = s.aligned ? (fl ? `<h3>FLAGGED: LOOK AT EACH ONE</h3>${fl}` : `<p class="st-ok">Nothing flagged on the ${CK.side}.</p>`) : "";
-    const ok = (s.results || []).filter(r => r.status === "ok");
+    const ok = (s.results || []).filter(r => r.status === "ok" && !r.missed);
+    const byLearning = ok.filter(r => r.learned === "good").map(r => r.ref);
     $("#ck-ok").innerHTML = s.aligned ? `<h3>RIGHT WAY ROUND (${ok.length})</h3><p class="dim">${esc(ok.map(r => r.ref).join(", ") || "none")}</p>` +
+      (byLearning.length ? `<p class="dim">Passed because they look like parts a tester confirmed: ${esc(byLearning.join(", "))}.</p>` : "") +
+      (ok.length ? `<h3>DID THE CHECK MISS ONE?</h3><p class="dim">If one of these is wrong, flag it: it's kept as a bad example, and the reference's look of that part is no longer trusted.</p>
+        <div class="row"><select id="ck-miss-ref">${ok.map(r => `<option>${esc(r.ref)}</option>`).join("")}</select>
+        <input id="ck-miss-note" class="note" placeholder="What's wrong"><button id="ck-miss" class="wrongbtn">FLAG AS WRONG</button></div>` : "") +
       ((s.skipped || []).length ? `<h3>NOT CHECKED HERE (${s.skipped.length})</h3><p class="dim">Look at these by eye: ${esc(s.skipped.map(r => r.ref).join(", "))}.</p>` : "") : "";
   }
   renderCkViewer();
@@ -842,12 +906,26 @@ $("#ck-clear").addEventListener("click", () => { CK.pts = {}; CK.cur = 0; render
 $("#ck-align").addEventListener("click", () => ckAct(() => post(`api/check/side/${CK.side}/align`, { points: CK.pts }), "Lined up. Look at each flagged part."));
 $("#ck-sides").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.side = b.dataset.side; CK.view = "result"; renderCheck(); } });
 $("#ck-view").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { CK.view = b.dataset.v; renderCkViewer(); } });
+const ckNote = ref => { const i = $$("#ck-flagged [data-note]").find(x => x.dataset.note === ref); return i ? i.value : ""; };
 $("#ck-flagged").addEventListener("click", e => {
   const b = e.target.closest("[data-ans]"); if (!b) return;
   const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === b.dataset.ref);
   const ans = cur && cur.answer === b.dataset.ans ? null : b.dataset.ans;
-  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans }));
+  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans, note: ckNote(b.dataset.ref), missed: !!(cur && cur.missed) }),
+    ans ? `Learned: ${b.dataset.ref} kept as a ${ans === "correct" ? "good" : "bad"} example.` : `${b.dataset.ref}: answer cleared and its example forgotten.`);
 });
+$("#ck-flagged").addEventListener("change", e => {
+  const i = e.target.closest("[data-note]"); if (!i) return;
+  const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === i.dataset.note);
+  if (cur && cur.answer === "wrong") ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: cur.ref, answer: "wrong", note: i.value, missed: !!cur.missed }), "Note saved with the example.");
+});
+$("#ck-ok").addEventListener("click", e => {
+  if (!e.target.closest("#ck-miss")) return;
+  const ref = $("#ck-miss-ref").value;
+  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref, answer: "wrong", note: $("#ck-miss-note").value, missed: true }),
+    `${ref} flagged as wrong. The check will look for this next time.`);
+});
+$("#ck-learned").addEventListener("click", () => { const c = CK.st && CK.st.check; setHistKind("learned", false); H.sel = c ? c.board : null; H.lside = CK.side; goTab("history"); });
 $("#ck-go").addEventListener("click", () => ckAct(() => post("api/check/start", { reference: $("#ck-ref").value, serial: $("#ck-serial").value, notes: $("#ck-notes").value }),
   "Check started. Take a photo of the board, lined up with the ghost.").then(() => { CK.side = Object.keys(CK.st.check ? CK.st.check.sides : { front: 1 })[0]; $("#ck-serial").value = ""; $("#ck-notes").value = ""; renderCheck(); }));
 $("#ck-new").addEventListener("click", () => { stopCk(); ckAct(() => post("api/check/close", {})); });

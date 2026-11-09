@@ -106,6 +106,20 @@ This is a quick look before work starts on a board (say, before a repair), not a
   it: no mark shows on the reference, the mark can't be made out, or the part doesn't look like the
   reference). Each flagged part is shown beside the reference; answer **Right way round** or
   **Wrong**.
+- Every answer teaches the check, as on the PTC QC station. A flagged part answered **Right way
+  round** is kept as a good example of that part (per board design and side), one answered **Wrong**
+  as a bad example with the note typed beside it. Later boards are compared with these as well as
+  the reference: a part that looks like a good example isn't flagged again, and one that looks like
+  a bad example is flagged as a **known fault** with that note. An example only counts when its
+  polarity mark points the same way as the part's. Up to 20 of each are kept per part, the oldest
+  dropped; clearing or changing an answer forgets its example.
+- **Did the check miss one?** flags a part it passed as wrong, with a note. That becomes a bad
+  example, and the reference's look of that part is no longer trusted (the reference turned round
+  counts as its right look instead) until you trust it again.
+- **History > Learned** (or **What the check has learned** on Check a board) lists the examples
+  for each board design and side, with the image, good or bad, note, serial and date, and a
+  **Delete** button, so you decide what the check is trained on. They are kept in the data folder
+  under `learned/<board>/<side>/` (examples.json and a JPEG for each).
 - The result is **FAIL** if any part is answered wrong, **PASS** once every flagged part is
   answered on at least one side, and **OPEN** until then. Parts the reference needed a closeup
   for, or that were too small or hidden, are listed to look at by eye.

@@ -327,6 +327,71 @@ def test_check_lined_up_from_clicked_fiducials():
     assert res["C3"]["status"] == "reversed" and res["C1"]["status"] == "ok", res
 
 
+def test_check_learns_from_answers():
+    from aoimap.check import Checks, load_examples, references
+    b = reference_board()
+    c = Checks(b.data)
+    board, H2 = b.project["board"], fx.camera("front", tilt_deg=-3, ppi=280)
+    shot = lambda *rev: cv2.imencode(".png", fx.render("front", H2, reversed_refs=rev))[1].tobytes()
+
+    def run(serial, *rev):
+        c.start(b.project["uid"], serial)
+        c.photo("front", shot(*rev))
+        assert c.cur["sides"]["front"]["aligned"]
+        return {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+
+    res = run("SN-1", "C3")
+    assert res["D8"]["status"] == "check" and res["C3"]["status"] == "reversed"
+    c.answer("front", "D8", "correct")               # a false alarm: D8 has no mark to go by
+    c.answer("front", "C3", "wrong", "tantalum in backwards")
+    ex = load_examples(b.data, board, "front")["examples"]
+    assert {(e["ref"], e["label"]) for e in ex} == {("D8", "good"), ("C3", "bad")} and ex[0]["serial"] == "SN-1"
+    # the next board: D8 isn't raised again, and C3 the wrong way round again is a known fault with the note
+    res = run("SN-2", "C3")
+    assert res["D8"]["status"] == "ok" and res["D8"]["learned"] == "good", res["D8"]
+    assert res["C3"]["status"] == "fault" and "tantalum in backwards" in res["C3"]["why"], res["C3"]
+    assert c.cur["result"] == "OPEN"
+    # a board with C3 the right way round isn't taken for the fault
+    res = run("SN-3")
+    assert res["C3"]["status"] == "ok" and res["D8"]["status"] == "ok", (res["C3"], res["D8"])
+    # changing an answer forgets the example it made
+    c.answer("front", "C5", "wrong", "wrong value", missed=True)    # one the check passed
+    d = load_examples(b.data, board, "front")
+    assert d["reference_wrong"] == {b.project["uid"]: ["C5"]} and c.cur["result"] == "FAIL"
+    assert sum(e["ref"] == "C5" for e in d["examples"]) == 1
+    c.answer("front", "C5", None)
+    d = load_examples(b.data, board, "front")
+    assert d["reference_wrong"] == {} and not [e for e in d["examples"] if e["ref"] == "C5"]
+    # a missed part: the reference's look of it is no longer trusted, so the same look is flagged next time
+    c.answer("front", "C5", "wrong", "wrong value", missed=True)
+    res = run("SN-4")
+    assert res["C5"]["status"] != "ok", res["C5"]
+    c.trust_reference(board, "front", b.project["uid"], "C5")
+    # deleting the examples puts the check back as it was
+    for e in c.learned(board, "front")["examples"]:
+        c.forget(board, "front", e["id"])
+    assert not load_examples(b.data, board, "front")["examples"]
+    assert c.learned_boards()[0]["front"] == {"good": 0, "bad": 0, "reference_wrong": 0}
+    res = run("SN-5", "C3")
+    assert res["D8"]["status"] == "check" and res["C3"]["status"] == "reversed" and res["C5"]["status"] == "ok"
+    assert [x["board"] for x in c.learned_boards()] == [r["board"] for r in references(b.data)]
+
+
+def test_learned_examples_kept_per_part_up_to_the_limit():
+    import numpy as np
+    from aoimap import check as ck
+    data = Path(tempfile.mkdtemp(prefix="aoimap-learn-"))
+    img = np.random.default_rng(0).integers(0, 255, (100, 100, 3), np.uint8)
+    for i in range(ck.MAX_EXAMPLES + 3):
+        ck.add_example(data, "B1", "front", img, [10, 10, 20, 20], "C1", "bad", f"n{i}")
+    ck.add_example(data, "B1", "front", img, [10, 10, 20, 20], "C1", "good")
+    ex = ck.load_examples(data, "B1", "front")["examples"]
+    bad = [e for e in ex if e["label"] == "bad"]
+    assert len(bad) == ck.MAX_EXAMPLES and bad[0]["note"] == "n3" and len(ex) == ck.MAX_EXAMPLES + 1
+    assert len(list(ck.learned_dir(data, "B1", "front").glob("*.jpg"))) == len(ex)
+    assert ck.example_path(data, "B1", "front", ex[-1]["id"]).is_file()
+
+
 def test_database_history():
     """Needs a MariaDB login: AOIMAP_TEST_DB=path/to/option-file (a throwaway database)."""
     import os
