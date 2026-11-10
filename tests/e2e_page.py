@@ -88,6 +88,19 @@ try:
         pg.screenshot(path=str(out / "6-back-after.png"))
         st = pg.evaluate("fetch('/api/state').then(r => r.json())")
         print("back summary:", st["sides"]["back"]["summary"])
+        # tick the resistors' BOM line: in the check, with its status; expand it and look at a part
+        pg.click("button[data-tab=parts]"); pg.wait_for_selector("#lines tbody tr")
+        row = "#lines tr[data-key='10K']"
+        assert not pg.is_checked(f"{row} [data-tick]") and "not ticked" in pg.inner_text(f"{row} .lstat")
+        pg.check(f"{row} [data-tick]"); pg.wait_for_function("document.querySelector(\"#lines tr[data-key='10K'] .lstat\").innerText.includes('FRONT')")
+        print("10k line:", pg.inner_text(f"{row} .lstat"))
+        assert pg.eval_on_selector(f"{row} [data-kind]", "s => s.value") == "look"
+        pg.click(f"{row} .lstat"); pg.wait_for_selector("#lines tr.sub [data-look='R1']")
+        pg.screenshot(path=str(out / "6b-parts-ticked.png"))
+        pg.click("#lines tr.sub [data-look='R1']"); pg.wait_for_selector("#tab-side:not([hidden])")
+        pg.wait_for_timeout(600)
+        assert pg.input_value("#look-ref") == "R1"
+        pg.screenshot(path=str(out / "6c-look-R1.png"))
         pg.click("button[data-tab=map]"); pg.wait_for_timeout(300)
         pg.screenshot(path=str(out / "7-map.png"))
         # this board's serial, then the history

@@ -507,6 +507,103 @@ def test_part_waiting_for_a_new_photo_is_asked_until_answered():
     assert e["reason"] == "reversed"
 
 
+def lines_by_key(b):
+    return {l["key"]: l for l in b.state()["lines"]}
+
+
+def test_tick_bom_lines_into_the_check_and_status():
+    from aoimap import check as ck, projects as pj
+    b = reference_board()
+    ref_uid, board = b.project["uid"], b.project["board"]
+    L = lines_by_key(b)
+    # every BOM line is listed, DNP ones too, each with whether its parts are checked on this board
+    assert L["DNP:10K"]["dnp"] and not L["DNP:10K"]["chosen_kind"] and L["DNP:10K"]["status"][0]["why"].startswith("not on the board")
+    st = {r["ref"]: r for l in L.values() for r in l["status"]}
+    assert st["C3"]["status"] == "checked" and st["UB1"]["status"] == "nophoto"
+    assert st["D1"]["status"] == "skipped" and "too small" in st["D1"]["why"] and "closeup planned" in st["D1"]["why"], st["D1"]
+    assert st["R1"]["status"] == "off" and st["R1"]["why"] == "not ticked"
+    # ticking the resistors' line puts R1, R2 (front) and RB1 (back) in the check and redraws the map
+    before = (b.dir / "front" / "map.jpg").read_bytes()
+    b.set_lines({"10K": {"kind": "look"}})
+    front = {r["ref"]: r for r in pj_parts(b, "front")}
+    assert {"R1", "R2"} <= set(front) and (b.dir / "front" / "map.jpg").read_bytes() != before
+    assert "R1" in (b.dir / "parts_map.csv").read_text()
+    st = {r["ref"]: r for r in lines_by_key(b)["10K"]["status"]}
+    assert st["R1"]["status"] == "skipped" and "closeup planned" in st["R1"]["why"]     # 0603s are small in this photo
+    assert st["RB1"]["status"] == "nophoto" and st["RB1"]["side"] == "back"
+    assert b.profile["kinds"]["10K"] == "look" and pj._read_json(b._profile_path(board))["kinds"]["10K"] == "look"
+    assert "BOM line 10k (3 parts) added to the check" in pj.load(b.data, ref_uid)["log"][-1]["what"]
+    # the learned examples of its parts are counted
+    b.teach(f"project/{ref_uid}/front", "R1", "good")
+    assert {r["ref"]: r for r in lines_by_key(b)["10K"]["status"]}["R1"]["good"] == 1
+    # a hidden part says so; unticking takes the parts out again, with the reason kept
+    b.set_lines({"T491B106K": {"hidden": "under the shield"}})
+    assert {r["ref"]: r for r in lines_by_key(b)["T491B106K"]["status"]}["C1"]["why"] == "hidden (under the shield)"
+    b.set_lines({"T491B106K": {"hidden": ""}, "SS14": {"kind": "", "hidden": "checked by the light test"}})
+    assert "D8" not in {r["ref"] for r in pj_parts(b, "front")}
+    assert lines_by_key(b)["SS14"]["status"][0]["why"] == "not ticked: checked by the light test"
+    try:
+        b.set_lines({"SS14": {"kind": "nonsense"}}); raise AssertionError("unknown kind")
+    except ValueError:
+        pass
+    # a check of another board follows the reference's new parts: R1 (taught, so checked though small), not D8
+    c = ck.Checks(b.data)
+    c.start(ref_uid)
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert "R1" in res and "D8" not in res and "R2" in {k["ref"] for k in c.cur["sides"]["front"]["skipped"]}
+
+
+def test_ticked_lines_carry_to_the_reference_and_the_next_board():
+    from aoimap import check as ck, projects as pj
+    b = reference_board()
+    ref_uid, board = b.project["uid"], b.project["board"]
+    b.new_from(ref_uid)                         # another board of the design, not the reference
+    b.set_lines({"SMAJ12CA": {"kind": "look"}})
+    # the reference is placed again with D7, from its saved alignment
+    assert "D7" in {r["ref"] for r in pj._read_json(pj.folder(b.data, ref_uid) / "front" / "parts_full.json")}
+    assert pj._read_json(pj.folder(b.data, ref_uid) / "profile.json")["kinds"]["SMAJ12CA"] == "look"
+    b.teach(f"project/{ref_uid}/front", "D7", "good", note="no band")
+    # a new board of the same design: its maps include D7 as soon as a photo is lined up
+    b.new_from(b.project["uid"])
+    assert b.profile["kinds"]["SMAJ12CA"] == "look" and any(p["ref"] == "D7" for p in b.design["parts"])
+    Hm = fx.camera("front", tilt_deg=1.5)
+    b.set_photo("front", cv2.imencode(".png", fx.render("front", Hm))[1].tobytes())
+    b.align("front", click(Hm, b.design, ["FIDT1", "FIDT2", "FIDT3", "FIDT4"], "front"))
+    assert {r["ref"]: r for r in pj_parts(b, "front")}["D7"]["checkable"]
+    d7 = {r["ref"]: r for r in lines_by_key(b)["SMAJ12CA"]["status"]}["D7"]
+    assert d7["status"] == "checked" and d7["good"] == 1        # what was learned applies to this board too
+    # and the same after loading the files again
+    b2 = Board(b.data)
+    b2.add_file("odb", ODB.name, ODB.read_bytes())
+    b2.add_file("bom", BOM.name, BOM.read_bytes())
+    assert any(p["ref"] == "D7" for p in b2.design["parts"])
+    # a check against the reference uses D7 with its learned example
+    c = ck.Checks(b.data)
+    c.start(ref_uid)
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+    assert {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}["D7"]["status"] == "ok"
+
+
+def test_dnp_line_can_be_ticked():
+    from aoimap import projects as pj
+    bom = TMP / "dnp" / "bom.csv"
+    bom.parent.mkdir(exist_ok=True)
+    text = BOM.read_text().replace('"R1, R2, RB1"', '"R1, RB1"')
+    bom.write_text(text + '99,1,R2,ERJ-3GEY0R00V,"RES 0R 0603",DNP\n')
+    b = Board(Path(tempfile.mkdtemp(prefix="aoimap-data-")))
+    b.add_file("odb", ODB.name, ODB.read_bytes())
+    b.add_file("bom", "bom.csv", bom.read_bytes())
+    L = lines_by_key(b)
+    dnp = L["DNP:ERJ-3GEY0R00V"]
+    assert dnp["dnp"] and dnp["on_board"] == ["R2"] and not dnp["chosen_kind"]
+    assert dnp["status"][0]["why"] == "DNP, not ticked" and b.design["dnp_on_board"] == ["R2"]
+    b.set_lines({"DNP:ERJ-3GEY0R00V": {"kind": "look"}})
+    r2 = next(p for p in b.design["parts"] if p["ref"] == "R2")
+    assert r2["kind"] == "look" and r2["key"] == "DNP:ERJ-3GEY0R00V"
+    assert pj._read_json(b._profile_path(b.name))["kinds"]["DNP:ERJ-3GEY0R00V"] == "look"
+
+
 def test_database_history():
     """Needs a MariaDB login: AOIMAP_TEST_DB=path/to/option-file (a throwaway database)."""
     import os
@@ -584,6 +681,15 @@ def test_database_history():
         assert [(e["ref"], e["kind"], e["wait_for_photo"]) for e in ex] == [("D7", "look", 1)]
         prof = h._run(lambda c: (c.execute("SELECT profile FROM aoi_board_profiles WHERE board=%s", (board,)), c.fetchone())[1])
         assert "D7" in json.loads(prof["profile"])["extra"]
+        # ticking a BOM line is kept in the database's copy of the board's choices
+        b.set_lines({"10K": {"kind": "look"}})
+        for _ in range(100):
+            h.flush()
+            prof = h._run(lambda c: (c.execute("SELECT profile FROM aoi_board_profiles WHERE board=%s", (board,)), c.fetchone())[1])
+            if json.loads(prof["profile"])["kinds"].get("10K") == "look":
+                break
+            time.sleep(0.1)
+        assert json.loads(prof["profile"])["kinds"]["10K"] == "look"
         # deleting an example deletes it from the database; a fresh start backfills from the folders
         ch.answer("front", "C3", None)
         h.flush()

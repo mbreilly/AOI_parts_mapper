@@ -15,8 +15,10 @@ DEFAULT_MARKINGS = {"tantalum": "pin1", "electrolytic": "pin1", "diode": "pin1",
 
 
 def line_key(line: dict) -> str:
-    """What a BOM line's choices are remembered by: its part number, or its description."""
-    return (line.get("value") or line.get("description") or ",".join(line["refs"][:3])).strip().upper()
+    """What a BOM line's choices are remembered by: its part number, or its description (a DNP line's
+    key starts DNP:, so it doesn't share the choices of a fitted line with the same part number)."""
+    key = (line.get("value") or line.get("description") or ",".join(line["refs"][:3])).strip().upper()
+    return "DNP:" + key if line.get("dnp") else key
 
 
 def outline_corners(p: dict, rot_sign: int = 1) -> list[list[float]]:
@@ -94,17 +96,19 @@ def build(odb: OdbDesign, bom: dict, profile: dict) -> dict:
     hidden = profile.get("hidden", {})
     extra = profile.get("extra", {}) or {}
     odb_by_ref = {p.ref: p for p in odb.parts}
-    parts = []
-    for line in bom["lines"]:
+    parts, seen = [], set()
+    for line in bom["lines"] + bom.get("dnp_lines", []):
         key = line_key(line)
-        kind = kinds[key] if key in kinds else line["kind"]
+        # a DNP line is only checked when ticked by hand
+        kind = kinds[key] if key in kinds else (None if line.get("dnp") else line["kind"])
         line["key"], line["chosen_kind"], line["hidden"] = key, kind, hidden.get(key)
         line["on_board"] = [r for r in line["refs"] if r in odb_by_ref]
         if not kind:
             continue
         for ref in line["refs"]:
             c = odb_by_ref.get(ref)
-            if c and ref not in extra:
+            if c and ref not in extra and ref not in seen:
+                seen.add(ref)
                 parts.append(_part(c, kind, line, hidden.get(key), key))
     # parts added by hand: their own kind wins over the BOM line's
     for ref, e in extra.items():

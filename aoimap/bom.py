@@ -122,23 +122,25 @@ def classify(text: str, rules=None) -> tuple[str | None, str]:
 
 def read_bom(path: Path, columns: dict | None = None, rules=None) -> dict:
     """Reads the BOM. Returns {"header", "columns", "lines": [...], "parts": {ref: line index},
-    "dnp": [refs]}. Each line is one part number: {value, description, type, refs, kind, why}."""
+    "dnp": [refs], "dnp_lines": [...]}. Each line is one part number: {value, description, type, refs, kind,
+    why}. Lines marked DNP are kept apart (with "dnp": True), so they can still be added to the check."""
     header, rows = read_table(path)
     cols = columns or guess_columns(header)
     if cols.get("refdes") is None:
         raise BomError("Couldn't tell which column holds the reference designators. Choose it in the column list.")
     get = lambda r, f: (r[cols[f]].strip() if cols.get(f) is not None and cols[f] < len(r) else "")
-    lines, parts, dnp = [], {}, []
+    lines, parts, dnp, dnp_lines = [], {}, [], []
     for r in rows:
         refs = expand_refs(get(r, "refdes"))
         if not refs:
             continue
-        if cols.get("dnp") is not None and _is_dnp(get(r, "dnp"), header[cols["dnp"]]):
-            dnp += refs
-            continue
         value, desc, typ = get(r, "value"), re.sub(r"\s+", " ", get(r, "description")), get(r, "type")
         kind, why = classify(" ".join((desc, value, typ)), rules)
+        if cols.get("dnp") is not None and _is_dnp(get(r, "dnp"), header[cols["dnp"]]):
+            dnp += refs
+            dnp_lines.append({"value": value, "description": desc, "type": typ, "refs": refs, "kind": kind, "why": why, "dnp": True})
+            continue
         for ref in refs:
             parts[ref] = len(lines)
         lines.append({"value": value, "description": desc, "type": typ, "refs": refs, "kind": kind, "why": why})
-    return {"header": header, "columns": cols, "lines": lines, "parts": parts, "dnp": dnp}
+    return {"header": header, "columns": cols, "lines": lines, "parts": parts, "dnp": dnp, "dnp_lines": dnp_lines}

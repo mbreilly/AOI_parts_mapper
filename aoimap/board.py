@@ -324,22 +324,23 @@ class Board:
             _write_json(self._profile_path(board), prof)
             if self.on_profile:
                 self.on_profile(board)
-        self._sync_references(board, extra, what)
+        self._sync_references(board, {"extra": extra}, what)
         return extra
 
     def _references(self, board):
         from .check import references
         return [r for r in references(self.data) if r["board"] == board]
 
-    def _sync_references(self, board, extra, what):
-        """The board's references (other than the project open here) get the same added parts and
-        are placed again from their saved alignment."""
+    def _sync_references(self, board, choices: dict, what):
+        """The board's references (other than the project open here) get the same choices of what to
+        check ({profile key: value}: the parts added by hand, the BOM lines' kinds and hidden) and are
+        placed again from their saved alignment."""
         for r in self._references(board):
             if self.project and r["uid"] == self.project["uid"]:
                 continue
             f = pj.folder(self.data, r["uid"]) / "profile.json"
             prof = _read_json(f) or _read_json(self._profile_path(board), {}) or {}
-            prof["extra"] = json.loads(json.dumps(extra))
+            prof.update(json.loads(json.dumps(choices)))
             _write_json(f, prof)
             o = Board(self.data)
             o.on_change = self.on_change
@@ -383,16 +384,39 @@ class Board:
         self.rebuild(); self.save_profile()
 
     def set_lines(self, changes: dict):
-        """{line key: {"kind": kind or "" for none, "hidden": reason or ""}}"""
+        """{line key: {"kind": kind or "" for none, "hidden": reason or ""}}. A line with a kind is in
+        the check (ticked on the Parts tab), one without isn't. Kept in the board's profile, and the
+        board's references are placed again with the new choices (from the alignment they already
+        have), so the next check of another board follows."""
+        lines = {ln["key"]: ln for ln in self.bom["lines"] + self.bom.get("dnp_lines", [])} if self.bom else {}
+        said = []
         for key, c in changes.items():
+            ln = lines.get(key)
+            name = (ln.get("value") or ln.get("description") or key) if ln else key
+            refs = f" ({len(ln['refs'])} part{'s' if len(ln['refs']) != 1 else ''})" if ln else ""
             if "kind" in c:
+                if c["kind"] and c["kind"] not in bomlib.KINDS:
+                    raise ValueError(f"Unknown kind {c['kind']}.")
+                was = ln.get("chosen_kind") if ln else self.profile["kinds"].get(key)
                 self.profile["kinds"][key] = c["kind"] or None
+                if c["kind"] and not was:
+                    said.append(f"BOM line {name}{refs} added to the check as {bomlib.KINDS[c['kind']]}")
+                elif was and not c["kind"]:
+                    said.append(f"BOM line {name}{refs} taken out of the check")
+                elif c["kind"] != was:
+                    said.append(f"BOM line {name} now checked as {bomlib.KINDS[c['kind']]}")
             if "hidden" in c:
                 if c["hidden"]:
                     self.profile["hidden"][key] = c["hidden"]
                 else:
                     self.profile["hidden"].pop(key, None)
+                if c["hidden"] != ((ln or {}).get("hidden") or ""):
+                    said.append(f"BOM line {name} " + (f"hidden because {c['hidden']}" if c["hidden"] else "no longer hidden"))
         self.rebuild(); self.save_profile()
+        if said:
+            what = "; ".join(said)
+            self._touch(what)
+            self._sync_references(self.name, {k: self.profile.get(k) or {} for k in ("kinds", "hidden", "extra")}, what)
 
     def set_option(self, key: str, value):
         if key == "rot_sign":
@@ -610,6 +634,54 @@ class Board:
         return r
 
     # ---- what the page shows --------------------------------------------------------------
+    def line_status(self) -> dict:
+        """{BOM line key: [{ref, side, status, why}]}: whether each part of each BOM line is checked on
+        the board open here. status is "checked" (on the photo of its side, or a closeup), "skipped"
+        (in the check, but the photo can't show it: why says so), "nophoto" (its side isn't lined up
+        yet) or "off" (not ticked, or not on the board). good/bad count the learned examples."""
+        from .check import load_examples
+        if not self.design or not self.bom:
+            return {}
+        in_check = {p["ref"]: p for p in self.design["parts"]}
+        on_board = {c["ref"]: ("front" if c["side"] == "top" else "back") for c in self.design.get("components", [])}
+        placed, planned, learned = {}, {}, {}
+        for side in ("front", "back"):
+            st = self.sides.get(side) or {}
+            if st.get("mapping"):
+                placed[side] = {r["ref"]: r for r in st.get("placed", [])}
+                planned[side] = {ref for t in st.get("tiles", []) for ref in t["refs"]}
+            n = learned.setdefault(side, {})
+            for x in load_examples(self.data, self.name, side)["examples"]:
+                n.setdefault(x["ref"], {"good": 0, "bad": 0})[x["label"]] += 1
+        out = {}
+        for ln in self.bom["lines"] + self.bom.get("dnp_lines", []):
+            rows = []
+            for ref in ln["refs"]:
+                side = on_board.get(ref)
+                r = {"ref": ref, "side": side or "", **(learned.get(side, {}).get(ref) or {"good": 0, "bad": 0})}
+                p = in_check.get(ref)
+                if not side:
+                    r.update(status="off", why="not on the board (not in the ODB++)")
+                elif not p:
+                    r.update(status="off", why=("DNP, not ticked" if ln.get("dnp") else "not ticked")
+                             + (f": {ln['hidden']}" if ln.get("hidden") else ""))
+                elif side not in placed or ref not in placed[side]:
+                    r.update(status="nophoto", why=f"no lined-up {side} photo yet")
+                else:
+                    rec = placed[side][ref]
+                    why = rec.get("reason") or ""
+                    if rec["checkable"]:
+                        r.update(status="checked", why=why)
+                    else:
+                        if why.startswith("too small"):
+                            why += " · closeup planned" if ref in planned[side] else ""
+                        r.update(status="skipped", why=why or "can't be checked from the photo")
+                if p and p.get("extra"):
+                    r["extra"] = True
+                rows.append(r)
+            out[ln["key"]] = rows
+        return out
+
     def side_state(self, side) -> dict:
         st = self.sides.get(side) or {}
         if st.get("img") is None:
@@ -635,9 +707,11 @@ class Board:
         d = self.design
         lines = []
         if self.bom:
-            for ln in self.bom["lines"]:
-                lines.append({k: ln.get(k) for k in ("key", "value", "description", "type", "refs", "kind", "why",
-                                                     "chosen_kind", "hidden", "on_board")})
+            status = self.line_status()
+            for ln in self.bom["lines"] + self.bom.get("dnp_lines", []):
+                lines.append({**{k: ln.get(k) for k in ("key", "value", "description", "type", "refs", "kind", "why",
+                                                        "chosen_kind", "hidden", "on_board")},
+                              "dnp": bool(ln.get("dnp")), "status": status.get(ln.get("key"), [])})
         return {
             "name": self.name, "messages": self.messages,
             "files": {"odb": bool(self.odb_path), "bom": bool(self.bom_path)},

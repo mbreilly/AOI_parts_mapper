@@ -68,17 +68,21 @@
   <section id="tab-parts" class="tab" hidden>
     <div class="cols">
       <div class="col wide">
-        <h2>WHICH PARTS ARE POLARISED</h2>
-        <p class="dim">Suggested from the BOM. Change the kind of any line, or mark parts that can't be seen
-          (under a heatsink or shield). Choices are kept for the next board with these part numbers.</p>
+        <h2>WHICH PARTS TO CHECK</h2>
+        <p class="dim">Every line of the BOM. Tick a line to check its parts (polarised ones are suggested and ticked to start with;
+          others are checked by their look), untick it to take them out. The Front and Back maps are redrawn straight away without
+          lining up again, the reference is updated, and the choices are kept for the next board of this design. Hidden because:
+          parts that can't be seen (under a heatsink or shield). <b>Checked on this board</b> says whether the photos of the board open
+          here show each part; click it to see each part, and a part to look at it.</p>
         <div class="row">
           <div class="seg" id="line-filter">
-            <button data-f="pol" class="on">POLARISED</button><button data-f="all">ALL LINES</button>
+            <button data-f="all" class="on">ALL LINES</button><button data-f="in">IN THE CHECK</button><button data-f="out">NOT IN THE CHECK</button>
           </div>
-          <input id="line-search" placeholder="Search value or description">
+          <input id="line-search" placeholder="Search value, description or ref">
+          <span class="dim" id="line-count"></span>
         </div>
         <div class="tablewrap"><table id="lines"><thead><tr>
-          <th>Value</th><th>Description</th><th>Parts</th><th>Kind</th><th>Hidden because</th></tr></thead>
+          <th title="In the check">Check</th><th>Value</th><th>Description</th><th>Parts</th><th>Kind</th><th>Hidden because</th><th>Checked on this board</th></tr></thead>
           <tbody></tbody></table></div>
         <h2>ADD ANY PART TO THE CHECK</h2>
         <p class="dim">Any part of the design, whether the BOM lists it or marks it polarised or not. Pick its kind: <b>Look only</b>

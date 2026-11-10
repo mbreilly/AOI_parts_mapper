@@ -157,3 +157,10 @@ td.no { color: var(--dimInk); opacity: .7; }
 .verdict.v-wrong { background: #C0392B; color: #fff; }
 .verdict.v-unsure { background: var(--accent); color: var(--panelEdge); }
 .verdict.v-reference { background: var(--screw); color: var(--panelEdge); }
+#lines td.lstat { cursor: pointer; font-size: 12px; white-space: normal; min-width: 180px; }
+#lines tr.dnp td { opacity: .8; }
+#lines tr.sub td { background: color-mix(in srgb, var(--panelEdge) 35%, transparent); }
+.tag { display: inline-block; padding: 0 4px; border-radius: 2px; font-size: 10px; font-weight: 700; background: var(--dimInk); color: var(--panelEdge); }
+.refs { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.ref.st-checked > a, .ref.st-checked > b { color: #6FCF73; } .ref.st-skipped > a, .ref.st-skipped > b { color: var(--accent); }
+.ref.st-off { opacity: .6; }

@@ -8,7 +8,7 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "
 let S = null;                 // server state
 let tab = "files";
 const ui = {
-  lineFilter: "pol", lineSearch: "", partsFilter: "all", highlight: null, marks: true,
+  lineFilter: "all", lineSearch: "", openLines: new Set(), partsFilter: "all", highlight: null, marks: true,
   pts: { front: {}, back: {} }, cur: { front: 0, back: 0 },
   anchors: { front: null, back: null },
   closeup: null,              // {side, index, pts, cur} while working on a closeup
@@ -17,6 +17,7 @@ const ui = {
   look: { front: null, back: null },   // the part looked at on each side
 };
 try { Object.assign(ui, JSON.parse(localStorage.getItem("aoimap-ui") || "{}"), { pts: { front: {}, back: {} }, closeup: null, stream: null, anchors: { front: null, back: null }, rot: {} }); } catch (e) { /* private window */ }
+if (!["all", "in", "out"].includes(ui.lineFilter)) ui.lineFilter = "all";
 const keepUi = () => { try { localStorage.setItem("aoimap-ui", JSON.stringify({ lineFilter: ui.lineFilter, partsFilter: ui.partsFilter, ghostOn: ui.ghostOn, ghostOp: ui.ghostOp, zoom: ui.zoom, marks: ui.marks })); } catch (e) { } };
 
 const KIND_NAMES = { ic: "IC", tantalum: "Tantalum", electrolytic: "Electrolytic", diode: "Diode", led: "LED", other: "Other", look: "Look only" };
@@ -217,15 +218,23 @@ $("#columns").addEventListener("change", e => {
 // ---- 2 parts -------------------------------------------------------------------------------
 let minpxKnob = null;
 function renderParts() {
-  const lines = S.lines.filter(l => (ui.lineFilter === "all" || l.chosen_kind) &&
-    (!ui.lineSearch || (l.value + " " + l.description).toLowerCase().includes(ui.lineSearch.toLowerCase())));
+  const q = ui.lineSearch.toLowerCase();
+  const lines = S.lines.filter(l => (ui.lineFilter === "all" || (ui.lineFilter === "in") === !!l.chosen_kind) &&
+    (!q || (l.value + " " + l.description + " " + l.refs.join(" ")).toLowerCase().includes(q)));
   $$("#line-filter button").forEach(b => b.classList.toggle("on", b.dataset.f === ui.lineFilter));
-  $("#lines tbody").innerHTML = lines.map(l => `<tr data-key="${esc(l.key)}">
-    <td>${esc(l.value)}</td><td>${esc(l.description)}${l.why && !l.chosen_kind ? ` <span class="dim">(${esc(l.why)})</span>` : ""}</td>
+  const nIn = S.lines.filter(l => l.chosen_kind).length;
+  $("#line-count").textContent = `${nIn} of ${S.lines.length} BOM lines in the check`;
+  $("#lines tbody").innerHTML = lines.map(l => {
+    const open = ui.openLines.has(l.key);
+    return `<tr data-key="${esc(l.key)}" class="${l.dnp ? "dnp" : ""}">
+    <td><input type="checkbox" data-tick ${l.chosen_kind ? "checked" : ""} ${l.on_board.length ? "" : "disabled"} title="${l.chosen_kind ? "In the check: untick to take its parts out" : "Tick to check its parts"}"></td>
+    <td>${l.dnp ? `<span class="tag">DNP</span> ` : ""}${esc(l.value)}</td><td>${esc(l.description)}${l.why && !l.chosen_kind ? ` <span class="dim">(suggested: ${esc(l.why)})</span>` : ""}</td>
     <td title="${esc(l.refs.join(", "))}">${l.on_board.length}${l.on_board.length !== l.refs.length ? ` of ${l.refs.length}` : ""}</td>
-    <td><select data-kind>${["", ...Object.keys(KIND_NAMES)].map(k => `<option value="${k}" ${(l.chosen_kind || "") === k ? "selected" : ""}>${k ? KIND_NAMES[k] : "Not polarised"}</option>`).join("")}</select></td>
-    <td><input data-hidden value="${esc(l.hidden || "")}" placeholder="visible" ${l.chosen_kind ? "" : "disabled"}></td></tr>`).join("")
-    || `<tr><td colspan="5" class="no">No lines match.</td></tr>`;
+    <td><select data-kind>${["", ...Object.keys(KIND_NAMES)].map(k => `<option value="${k}" ${(l.chosen_kind || "") === k ? "selected" : ""}>${k ? KIND_NAMES[k] : "Not checked"}</option>`).join("")}</select></td>
+    <td><input data-hidden value="${esc(l.hidden || "")}" placeholder="${l.chosen_kind ? "visible" : "why not (optional)"}"></td>
+    <td class="lstat" data-expand title="Show each part">${open ? "▾" : "▸"} ${lineSummary(l)}</td></tr>`
+      + (open ? `<tr class="sub"><td></td><td colspan="6">${lineRefs(l)}</td></tr>` : "");
+  }).join("") || `<tr><td colspan="7" class="no">No lines match.</td></tr>`;
   const mk = S.profile.markings;
   $("#markings").innerHTML = ["tantalum", "electrolytic", "diode", "led"].map(k => `<div class="row"><span class="lab" style="width:100px">${KIND_NAMES[k].toUpperCase()}</span>
     <div class="seg" data-mark="${k}"><button data-end="pin1" class="${mk[k] === "pin1" ? "on" : ""}">AT PIN 1</button><button data-end="other" class="${mk[k] === "other" ? "on" : ""}">AT PIN 2</button></div></div>`).join("");
@@ -248,6 +257,31 @@ function renderParts() {
     <button data-xtrain="${esc(x.ref)}" data-side="${x.side}">TRAIN</button>
     <button data-xwait="${esc(x.ref)}" class="${x.wait ? "on" : ""}" title="Ask about it on the next check of its side until it's answered">WAIT FOR PHOTO</button>
     <button data-xdel="${esc(x.ref)}">REMOVE</button></div>`).join("") || `<div class="dim">None added yet.</div>`;
+}
+// whether a BOM line's parts are checked on the board open here, by side
+const SIDE_SHORT = { front: "FRONT", back: "BACK" };
+function lineSummary(l) {
+  const st = l.status || [], inCheck = st.filter(r => r.status !== "off");
+  const g = st.reduce((a, r) => a + r.good, 0), b = st.reduce((a, r) => a + r.bad, 0);
+  const learned = g + b ? ` <span class="dim">· learned ${g} good, ${b} bad</span>` : "";
+  if (!inCheck.length) return `<span class="dim">${!l.on_board.length ? "not on the board" : l.dnp ? "DNP, not ticked" : "not ticked"}${l.hidden && !l.chosen_kind ? ": " + esc(l.hidden) : ""}</span>${learned}`;
+  const sides = ["front", "back"].filter(s => inCheck.some(r => r.side === s)).map(s => {
+    const rs = inCheck.filter(r => r.side === s), c = rs.filter(r => r.status === "checked").length;
+    if (rs.every(r => r.status === "nophoto")) return `${SIDE_SHORT[s]} <span class="dim">no photo</span>`;
+    return `${SIDE_SHORT[s]} <span class="${c === rs.length ? "st-ok" : "st-check"}">${c === rs.length ? "✓" : "✗"} ${c}/${rs.length}</span>`;
+  });
+  const why = {};
+  for (const r of inCheck.filter(r => r.status === "skipped")) { const k = r.why.includes("closeup planned") ? "too small, closeup planned" : r.why.replace(/[:(].*/, "").trim(); why[k] = (why[k] || 0) + 1; }
+  const skipped = Object.entries(why).map(([k, n]) => `${n} ${esc(k)}`).join(", ");
+  return sides.join(" · ") + (skipped ? ` <span class="dim">· skipped: ${skipped}</span>` : "") + learned;
+}
+function lineRefs(l) {
+  const mark = { checked: "✓", skipped: "✗", nophoto: "–", off: "·" };
+  return `<div class="refs">${(l.status || []).map(r => {
+    const can = r.side && S.sides[r.side] && S.sides[r.side].photo;
+    return `<span class="ref st-${r.status}">${can ? `<a href="#" data-look="${esc(r.ref)}" data-side="${r.side}" title="Look at it on the ${r.side}">${esc(r.ref)}</a>` : `<b>${esc(r.ref)}</b>`}
+      ${mark[r.status] || ""} <span class="dim">${r.side ? SIDE_SHORT[r.side].toLowerCase() : ""}${r.why ? " · " + esc(r.why) : r.status === "checked" ? " · checked" : ""}${r.extra ? " · added by hand" : ""}${r.good + r.bad ? ` · ${r.good} good, ${r.bad} bad` : ""}</span></span>`;
+  }).join("")}</div>`;
 }
 const XP = { ref: null, side: null };
 async function openTrain(ref, side) {
@@ -290,12 +324,27 @@ $("#xp-list").addEventListener("click", e => {
 });
 $("#line-filter").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { ui.lineFilter = b.dataset.f; keepUi(); renderParts(); } });
 $("#line-search").addEventListener("input", e => { ui.lineSearch = e.target.value; renderParts(); });
+const REDRAWN = "; the Front and Back maps are redrawn";
 $("#lines").addEventListener("change", e => {
   const tr = e.target.closest("tr"); if (!tr) return;
-  const key = tr.dataset.key, ch = {};
-  if (e.target.matches("[data-kind]")) ch.kind = e.target.value;
+  const key = tr.dataset.key, ch = {}, l = S.lines.find(x => x.key === key);
+  let done = "";
+  if (e.target.matches("[data-tick]")) {
+    ch.kind = e.target.checked ? (l.kind || "look") : "";
+    done = e.target.checked ? `${l.value || l.description}: ${l.on_board.length} part(s) added to the check as ${KIND_NAMES[ch.kind]}${REDRAWN}. Change the kind on the line if needed.`
+      : `${l.value || l.description} taken out of the check${REDRAWN}. What it has learned is kept.`;
+  }
+  if (e.target.matches("[data-kind]")) { ch.kind = e.target.value; done = (ch.kind ? `${l.value || l.description} checked as ${KIND_NAMES[ch.kind]}` : `${l.value || l.description} taken out of the check`) + REDRAWN + "."; }
   if (e.target.matches("[data-hidden]")) ch.hidden = e.target.value.trim();
-  act(() => post("api/lines", { [key]: ch }));
+  act(() => post("api/lines", { [key]: ch }), done || undefined);
+});
+$("#lines").addEventListener("click", e => {
+  const a = e.target.closest("[data-look]");
+  if (a) { e.preventDefault(); const side = a.dataset.side, ref = a.dataset.look; goTab(side); return lookAt(side, ref); }
+  const x = e.target.closest("[data-expand]"); if (!x) return;
+  const key = x.closest("tr").dataset.key;
+  ui.openLines.has(key) ? ui.openLines.delete(key) : ui.openLines.add(key);
+  renderParts();
 });
 $("#markings").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
   act(() => post("api/option", { key: "marking", value: { kind: b.closest("[data-mark]").dataset.mark, end: b.dataset.end } })); });
