@@ -29,7 +29,7 @@ from . import projects as pj
 
 _IMAGES = OrderedDict()       # (path, mtime) -> image; the last few full photos read
 _DESIGNS = {}                 # uid -> (mtime, design with components)
-VERDICTS = {"ok": "correct", "reversed": "wrong", "rotated": "wrong", "fault": "wrong", "check": "unsure"}
+VERDICTS = {"ok": "correct", "reversed": "wrong", "rotated": "wrong", "fault": "wrong", "check": "unsure", "ns": "ns"}
 
 
 def _image(path: Path):
@@ -236,6 +236,8 @@ def inspect(data: Path, src: str, ref: str) -> dict:
            "good": sum(e["label"] == "good" for e in ex), "bad": sum(e["label"] == "bad" for e in ex),
            "examples": [{k: e.get(k, "") for k in ("id", "label", "reason", "note", "serial", "date")} for e in ex[-6:]],
            "answer": None, "verdict": "skipped", "why": ""}
+    ns = ck.not_stuffed(data, board, side, ck.ns_key(s["serial"], s["uid"])).get(ref)
+    out["ns"] = ns or ""        # "board": not stuffed on this board, "all": on every board of the design
     placed = _placed(data, s["reference"], side, ref) if s["reference"] else None
     small = placed and ("via" in placed or (placed.get("reason") or "").startswith("too small"))
     # what the check said, for a part on a checked board
@@ -248,7 +250,12 @@ def inspect(data: Path, src: str, ref: str) -> dict:
                        note=r.get("note", ""), reason=r.get("reason", ""), missed=bool(r.get("missed")), status=r["status"])
             if r.get("missed"):
                 out.update(verdict="wrong", why="flagged by a tester though the check passed it")
+            if ns:
+                out.update(verdict="ns", why=ck.ns_why(ns))
             return out
+    if ns:
+        out.update(verdict="ns", why=ck.ns_why(ns))
+        return out
         sk = next((k for k in c["sides"][side].get("skipped", []) if k["ref"] == ref), None)
         if sk:
             out.update(verdict="skipped", why=sk["why"] + ("; teach it and later boards check it" if not ex else ""))
@@ -295,9 +302,28 @@ def inspect(data: Path, src: str, ref: str) -> dict:
 
 
 def answers(data: Path, board: str, src: str) -> dict:
-    """{ref: "good" | "bad"}: how each part was last taught on this photo (src), for its map."""
+    """{ref: "good" | "bad" | "ns"}: how each part was last taught on this photo (src), or that it's
+    not stuffed on this board, for its map."""
     side = src.rsplit("/", 1)[-1]
-    return {e["ref"]: e["label"] for e in ck.load_examples(data, board, side)["examples"] if e.get("source") == src}
+    out = {e["ref"]: e["label"] for e in ck.load_examples(data, board, side)["examples"] if e.get("source") == src}
+    try:
+        s = source(data, src)
+    except ValueError:
+        return out
+    return out | dict.fromkeys(ck.not_stuffed(data, board, side, ck.ns_key(s["serial"], s["uid"])), "ns")
+
+
+def set_ns(data: Path, src: str, ref: str, on: bool = True, everywhere: bool = False) -> dict:
+    """NS for a part on a photo's board (everywhere: every board of the design); on=False undoes both.
+    The board check open on the page does this itself (Checks.set_ns), so its results follow."""
+    s = source(data, src)
+    key = ck.ns_key(s["serial"], s["uid"])
+    if on:
+        ck.set_not_stuffed(data, s["board"], s["side"], ck.ALL_BOARDS if everywhere else key, ref)
+    else:
+        for k in (key, ck.ALL_BOARDS):
+            ck.set_not_stuffed(data, s["board"], s["side"], k, ref, False)
+    return s
 
 
 def add(data: Path, src: str, ref: str, label: str, reason: str = "", note: str = "") -> str:

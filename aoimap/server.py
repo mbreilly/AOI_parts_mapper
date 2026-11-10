@@ -329,6 +329,15 @@ def make_handler(app: App):
                 else:
                     b.teach(src, ref, ans, j.get("reason", ""), j.get("note", ""), j.get("kind"))
                 return self._json(tl.inspect(data, src, ref))
+            if r == ["ns"]:     # not stuffed: on this board, or every board of the design; on=false undoes it
+                src, ref, on, every = j["src"], j["ref"], j.get("on", True) is not False, bool(j.get("all"))
+                c = app.checks.cur
+                kind, uid, side = src.split("/") if src.count("/") == 2 else ("", "", "")
+                if kind == "check" and c and c["uid"] == uid:
+                    app.checks.set_ns(side, ref, on, every)
+                else:
+                    b.set_ns(src, ref, on, every)
+                return self._json(tl.inspect(data, src, ref))
             if r == ["extra"]:
                 b.set_extra(j["ref"], j.get("kind"), j.get("wait"), bool(j.get("remove")), j.get("board"))
                 return self._json(b.state() if b.design else {"ok": True})
@@ -386,6 +395,9 @@ def make_handler(app: App):
                 elif what == "answer":
                     j = self._jbody()
                     c.answer(side, j["ref"], j.get("answer"), j.get("note"), bool(j.get("missed")), j.get("reason"))
+                elif what == "ns":
+                    j = self._jbody()
+                    c.set_ns(side, j["ref"], j.get("on", True) is not False, bool(j.get("all")))
                 else:
                     return self._err("Not found", 404)
             elif len(r) == 4 and r[0] == "learned" and r[3] in ("delete", "trust"):

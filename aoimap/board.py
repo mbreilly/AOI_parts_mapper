@@ -371,6 +371,15 @@ class Board:
             self._touch(what, p)
         return ex_id
 
+    def set_ns(self, src: str, ref: str, on: bool = True, everywhere: bool = False):
+        """Marks a part not stuffed on a photo's board, or every board of the design (see teach.py)."""
+        from . import teach as tl
+        s = tl.set_ns(self.data, src, ref, on, everywhere)
+        if s["kind"] == "project":
+            p = self.project if self.project and self.project["uid"] == s["uid"] else pj.load(self.data, s["uid"])
+            self._touch(f"{s['side'].capitalize()} {ref}: " + (("NOT STUFFED on every board of this design" if everywhere
+                        else "NOT STUFFED on this board") if on else "NS undone") + f" from {s['label']}", p)
+
     def extras(self) -> list[dict]:
         """The parts added by hand, with how much each has been taught, for the Parts tab."""
         from .check import load_examples

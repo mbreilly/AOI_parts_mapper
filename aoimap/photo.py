@@ -26,7 +26,7 @@ KIND_COLOURS = {   # BGR
     "diode": (60, 60, 255), "led": (80, 230, 80), "other": (230, 230, 230), "look": (255, 160, 60),
 }
 GREY = (150, 150, 150)
-ANSWER_COLOURS = {"good": (80, 190, 80), "bad": (60, 60, 230)}   # BGR, as the board check's green and red
+ANSWER_COLOURS = {"good": (80, 190, 80), "bad": (60, 60, 230), "ns": GREY}   # BGR, as the board check's green and red; ns: not stuffed
 
 
 def decode(data: bytes) -> np.ndarray:
@@ -419,11 +419,21 @@ def _crop_with_poly(img, poly, a, b):
 
 # ---- drawing --------------------------------------------------------------------------------
 
+def dashed_poly(vis, pts, col, t, dash: int = 8):
+    """A closed outline drawn dashed (a part that isn't stuffed)."""
+    pts = np.float32(pts)
+    for a, b in zip(pts, np.roll(pts, -1, 0)):
+        n = max(1, int(np.linalg.norm(b - a) / dash))
+        for i in range(0, n, 2):
+            p, q = a + (b - a) * i / n, a + (b - a) * min(i + 1, n) / n
+            cv2.line(vis, tuple(p.astype(int)), tuple(q.astype(int)), col, t, cv2.LINE_AA)
+
+
 def overlay(img: np.ndarray, placed: list[dict], width: int = 1600, highlight: str | None = None,
             show_marks: bool = True, answers: dict | None = None) -> bytes:
-    """A JPEG of the photo with every part outlined in its kind's colour, pin 1 as a dot, the expected
+    """A JPEG of the photo with every part outlined in its kind's colour, pin 1 of a polarised part as a dot, the expected
     polarity mark drawn, and parts that can't be checked in grey. answers: {ref: "good" | "bad"}, the
-    parts taught on this photo, outlined green or red instead."""
+    parts taught on this photo, outlined green or red instead ("ns": not stuffed, grey dashed and labelled NS)."""
     s = min(1.0, width / img.shape[1]) if width else 1.0
     vis = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s != 1 else img.copy()
     t = max(1, int(round(2 * vis.shape[1] / 1600)))
@@ -432,8 +442,13 @@ def overlay(img: np.ndarray, placed: list[dict], width: int = 1600, highlight: s
         ans = ANSWER_COLOURS.get((answers or {}).get(r["ref"]))
         col = ans or col
         q = (np.float32(r["poly"]) * s).astype(np.int32)
+        if (answers or {}).get(r["ref"]) == "ns":
+            dashed_poly(vis, q, col, t + (2 if r["ref"] == highlight else 0))
+            x, y = (int(v * s) for v in r["poly"][0])
+            cv2.putText(vis, f"{r['ref']} NS", (x, max(10, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4 * max(1, t), col, 1, cv2.LINE_AA)
+            continue
         cv2.polylines(vis, [q], True, col, t + (2 if r["ref"] == highlight else 0) + (1 if ans else 0), cv2.LINE_AA)
-        if r.get("pin1"):
+        if r.get("pin1") and r["kind"] != "look":    # a non-polarised part has no pin 1 to show
             cv2.circle(vis, tuple(int(v * s) for v in r["pin1"]), max(2, t + 1), (0, 0, 255) if r["checkable"] else GREY, -1, cv2.LINE_AA)
         if show_marks and r.get("mark") and r["checkable"] and r["mark"]["type"] == "band":
             at, to = np.float32(r["mark"]["at"]) * s, np.float32(r["mark"]["towards"]) * s

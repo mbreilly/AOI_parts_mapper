@@ -782,7 +782,7 @@ function typedRef(text) {
   const byVal = PL.parts.filter(p => (p.value || "").toLowerCase() === text.trim().toLowerCase());
   return byVal.length ? byVal[0].ref : t;
 }
-const VERDICT_TEXT = { correct: "CORRECT", wrong: "WRONG", unsure: "NOT SURE", skipped: "SKIPPED", reference: "REFERENCE" };
+const VERDICT_TEXT = { correct: "CORRECT", wrong: "WRONG", unsure: "NOT SURE", skipped: "SKIPPED", reference: "REFERENCE", ns: "NOT STUFFED" };
 const partCrop = (src, ref, which, v) => `api/part/crop?src=${encodeURIComponent(src)}&ref=${encodeURIComponent(ref)}&which=${which}&v=${v || ""}`;
 function reasonSelect(cls, cur) {
   const rs = Object.keys(PL.reasons).length ? PL.reasons : (S && S.reasons) || {};
@@ -803,8 +803,11 @@ async function showPart(el, src, ref, after) {
       ${d.reference && !d.verdict.startsWith("ref") ? `<figure><img src="${partCrop(src, d.ref, "reference", v)}" alt="">reference</figure>` : ""}</div>
     <div class="dim">Learned so far: ${d.good} good, ${d.bad} bad${d.pending ? " · waiting for a new photo to be taught on" : ""}${ans ? ` · this board answered ${ans === "correct" ? "GOOD" : "BAD"}` : ""}</div>
     <div class="row">${d.in_check ? "" : `<select class="t-kind" title="What kind of part to check it as">${Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`}
-      <button data-t="good" class="${ans === "correct" ? "on" : ""}">GOOD</button><button data-t="bad" class="wrongbtn ${ans === "wrong" ? "on" : ""}">BAD</button>
+      <button data-t="good" class="${ans === "correct" ? "on" : ""}">GOOD</button><button data-t="bad" class="wrongbtn ${ans === "wrong" && d.reason !== "missing" ? "on" : ""}">BAD</button>
+      <button data-t="missing" class="wrongbtn ${ans === "wrong" && d.reason === "missing" ? "on" : ""}" title="It should be there but isn't: a fault, kept as a bad example">MISSING</button>
+      <button data-t="ns" class="${d.ns === "board" ? "on" : ""}" title="Not stuffed: left off this board on purpose, not a fault. Press again to undo">NS</button>
       ${reasonSelect("t-reason", d.reason)}<input class="note t-note" value="${esc(d.note || "")}" placeholder="Note (kept with the example)"></div>
+    <div class="row"><button data-t="nsall" class="${d.ns === "all" ? "on" : ""}" title="Not stuffed on every board of this design from now on. Press again to undo">${d.ns === "all" ? "NS ON EVERY BOARD ✓ (UNDO)" : "NS ON EVERY BOARD OF THIS DESIGN"}</button></div>
     ${d.in_check && !d.extra ? "" : `<div class="row">${d.in_check ? "" : `<button data-t="add">ADD TO THE CHECK</button>`}<button data-t="wait" class="${d.wait ? "on" : ""}">${d.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO"}</button></div>`}
     ${d.examples.length ? `<div class="dim">${d.examples.map(e => `<span class="${e.label === "good" ? "st-ok" : "st-wrong"}">${e.label.toUpperCase()}</span>${e.reason ? " " + esc(PL.reasons[e.reason] || e.reason) : ""}${e.note ? " · " + esc(e.note) : ""} <span class="dim">${esc(e.serial || "")} ${esc(e.date)}</span>`).join("<br>")}</div>` : ""}
   </div>`;
@@ -812,14 +815,19 @@ async function showPart(el, src, ref, after) {
     const b = e.target.closest("[data-t]"); if (!b) return;
     const kind = $(".t-kind", el) ? $(".t-kind", el).value : null;
     try {
-      if (b.dataset.t === "add" || b.dataset.t === "wait") {
+      if (b.dataset.t === "ns" || b.dataset.t === "nsall") {
+        const every = b.dataset.t === "nsall", on = every ? d.ns !== "all" : d.ns !== "board";
+        await post("api/part/ns", { src, ref: d.ref, on, all: every });
+        say(!on ? `${d.ref}: NS undone, it's checked again.` : every ? `${d.ref}: not stuffed on every board of this design.` : `${d.ref}: not stuffed on this board.`);
+      } else if (b.dataset.t === "add" || b.dataset.t === "wait") {
         await post("api/part/extra", { ref: d.ref, kind: d.in_check ? null : kind, board: d.board, ...(b.dataset.t === "wait" ? { wait: !d.wait } : {}) });
         say(b.dataset.t === "add" ? `${d.ref} added to the check.` : d.wait ? `${d.ref} no longer waits for a photo.` : `${d.ref} will be asked about on the next check of the ${d.side}.`);
       } else {
-        const reason = $(".t-reason", el).value, note = $(".t-note", el).value;
-        if (b.dataset.t === "bad" && !reason) { say("Pick why it's bad (reversed, missing...) first.", true); return; }
-        await post("api/part/teach", { src, ref: d.ref, answer: b.dataset.t, reason, note, kind });
-        say(`Learned: ${d.ref} kept as a ${b.dataset.t} example${d.in_check ? "" : ", and added to the check"}.`);
+        const missing = b.dataset.t === "missing", note = $(".t-note", el).value;
+        const reason = missing ? "missing" : $(".t-reason", el).value, answer = missing ? "bad" : b.dataset.t;
+        if (answer === "bad" && !reason) { say("Pick why it's bad (reversed, missing...) first.", true); return; }
+        await post("api/part/teach", { src, ref: d.ref, answer, reason, note, kind });
+        say(`Learned: ${d.ref} kept as a ${missing ? "missing (bad)" : answer} example${d.in_check ? "" : ", and added to the check"}.`);
       }
       PL.uid = null;
       if (after) await after(d.ref);
@@ -910,18 +918,22 @@ async function loadChecks() {
 }
 
 const reasonName = k => (PL.reasons[k] || (S && S.reasons && S.reasons[k]) || k);
-const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it", fault: "known fault" };
+const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it", fault: "known fault", ns: "not stuffed" };
+const FINE = r => r.status === "ok" || r.status === "ns";     // needs no answer
 const ckFile = (uid, side, name, extra = "") => `api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
 const ckCrop = (uid, side, ref, which) => `api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
 function flaggedHtml(c, side, editable) {
-  const st = c.sides[side] || {}, rs = (st.results || []).filter(r => r.status !== "ok" || r.missed);
+  const st = c.sides[side] || {}, rs = (st.results || []).filter(r => !FINE(r) || r.missed);
   return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
       <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · ${r.missed ? `<span class="st-wrong">missed by the check</span>` : r.new ? `<span class="st-check">new part, teach me</span>` : `<span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>`}
         <div class="dim">${esc(r.why || "")}</div></div>
       <div class="pics"><figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "reference")}" alt="">reference</figure>
         <figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "board")}" alt="">this board</figure></div>
       ${editable ? `<div class="row">${r.missed ? "" : `<button data-ans="correct" data-ref="${esc(r.ref)}" class="${r.answer === "correct" ? "on" : ""}">RIGHT WAY ROUND</button>`}
-        <button data-ans="wrong" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" ? "on wrong" : ""}">WRONG</button>
+        <button data-ans="wrong" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" && r.reason !== "missing" ? "on wrong" : ""}">WRONG</button>
+        <button data-ans="missing" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" && r.reason === "missing" ? "on wrong" : ""}" title="It should be there but isn't: a fault">MISSING</button>
+        ${r.missed ? "" : `<button data-ns="board" data-ref="${esc(r.ref)}" title="Not stuffed: left off this board on purpose, not a fault">NS</button>
+        <button data-ns="all" data-ref="${esc(r.ref)}" title="Not stuffed on every board of this design from now on">NS ALL BOARDS</button>`}
         ${reasonSelect("reason", r.reason).replace("<select ", `<select data-reason="${esc(r.ref)}" `)}
         <input class="note" data-note="${esc(r.ref)}" value="${esc(r.note || "")}" placeholder="Note (kept with the example)"></div>
         ${r.answer ? `<div class="dim learnt">Learned as a ${r.answer === "correct" ? "good" : "bad"} example of ${esc(r.ref)}${r.example ? "" : " (since deleted)"}.</div>` : ""}`
@@ -943,7 +955,7 @@ async function showCheck(uid) {
       <b>Check</b><span>${esc(c.uid)}</span>
       <b>Started</b><span>${esc(c.created)} on ${esc(c.station)}</span>
       <b>Reference</b><span>${c.reference_serial === null ? esc(c.reference) + " (no longer there)" : `<a href="#" data-showproj="${esc(c.reference)}">${esc(c.reference)}</a>${c.reference_serial ? " · " + esc(c.reference_serial) : ""}`}</span>
-      ${sides.map(s => { const st = c.sides[s]; const rs = st.results || []; return `<b>${s === "front" ? "Front" : "Back"}</b><span>${st.aligned ? `${rs.length} parts checked, ${rs.filter(r => r.status !== "ok").length} flagged` : st.photo ? "photo not lined up" : "not checked"}</span>`; }).join("")}
+      ${sides.map(s => { const st = c.sides[s]; const rs = st.results || []; return `<b>${s === "front" ? "Front" : "Back"}</b><span>${st.aligned ? `${rs.length} parts checked, ${rs.filter(r => !FINE(r)).length} flagged` : st.photo ? "photo not lined up" : "not checked"}</span>`; }).join("")}
       <b>Notes</b><span>${esc(c.notes) || "–"}</span>
       <b>Folder</b><span class="mono">${esc(c.folder)}</span>
     </div>
@@ -1114,11 +1126,11 @@ function renderCheck() {
     const s = c.sides[CK.side] || {};
     $("#ck-title").textContent = `${c.board}${c.serial ? "  ·  " + c.serial : ""}`;
     $("#ck-result").className = `badge ${c.result}`; $("#ck-result").textContent = c.result;
-    const rs = Object.values(c.sides).flatMap(x => x.results || []), open = rs.filter(r => r.status !== "ok" && !r.answer).length;
+    const rs = Object.values(c.sides).flatMap(x => x.results || []), open = rs.filter(r => !FINE(r) && !r.answer).length;
     $("#ck-sub").textContent = c.result === "OPEN" ? (rs.length ? `${open} flagged part(s) to look at` : "Take a photo of the board") :
       c.result === "PASS" ? `All ${rs.length} parts checked are the right way round${sides.some(x => !c.sides[x].aligned) ? " (" + sides.filter(x => c.sides[x].aligned).join(" and ") + " only)" : ""}` :
       `Wrong: ${rs.filter(r => r.answer === "wrong").map(r => r.ref).join(", ")}`;
-    $("#ck-sides").innerHTML = sides.map(x => { const y = c.sides[x]; const f = (y.results || []).filter(r => r.status !== "ok" && !r.answer).length;
+    $("#ck-sides").innerHTML = sides.map(x => { const y = c.sides[x]; const f = (y.results || []).filter(r => !FINE(r) && !r.answer).length;
       return `<button data-side="${x}" class="${x === CK.side ? "on" : ""}">${x.toUpperCase()}${y.aligned ? (f ? ` · ${f}` : " ✓") : ""}</button>`; }).join("");
     $("#ck-msg").hidden = !s.message; $("#ck-msg").textContent = s.message || "";
     $("#ck-points").hidden = !(s.photo && !s.aligned);
@@ -1128,12 +1140,14 @@ function renderCheck() {
     const fl = flaggedHtml(c, CK.side, true);
     $("#ck-flagged").innerHTML = s.aligned ? (fl ? `<h3>FLAGGED: LOOK AT EACH ONE</h3>${fl}` : `<p class="st-ok">Nothing flagged on the ${CK.side}.</p>`) : "";
     const ok = (s.results || []).filter(r => r.status === "ok" && !r.missed);
-    const byLearning = ok.filter(r => r.learned === "good").map(r => r.ref);
+    const byLearning = ok.filter(r => r.learned === "good").map(r => r.ref), ns = (s.results || []).filter(r => r.status === "ns");
     $("#ck-ok").innerHTML = s.aligned ? `<h3>RIGHT WAY ROUND (${ok.length})</h3><p class="dim">${esc(ok.map(r => r.ref).join(", ") || "none")}</p>` +
       (byLearning.length ? `<p class="dim">Passed because they look like parts a tester confirmed: ${esc(byLearning.join(", "))}.</p>` : "") +
       (ok.length ? `<h3>DID THE CHECK MISS ONE?</h3><p class="dim">If one of these is wrong, flag it: it's kept as a bad example, and the reference's look of that part is no longer trusted.</p>
         <div class="row"><select id="ck-miss-ref">${ok.map(r => `<option>${esc(r.ref)}</option>`).join("")}</select>
         ${reasonSelect("reason").replace("<select ", `<select id="ck-miss-reason" `)}<input id="ck-miss-note" class="note" placeholder="Note (kept with the example)"><button id="ck-miss" class="wrongbtn">FLAG AS WRONG</button></div>` : "") +
+      (ns.length ? `<h3>NOT STUFFED (${ns.length})</h3><p class="dim">Left off on purpose, not faults.</p>` +
+        ns.map(r => `<div class="row"><b>${esc(r.ref)}</b><span class="dim grow">${esc(r.why)}</span><button data-unns="${esc(r.ref)}">UNDO NS</button></div>`).join("") : "") +
       ((s.skipped || []).length ? `<h3>NOT CHECKED HERE (${s.skipped.length})</h3><p class="dim">Look at these by eye: ${esc(s.skipped.map(r => r.ref).join(", "))}.</p>` : "") : "";
   }
   renderCkViewer();
@@ -1223,11 +1237,15 @@ $("#ck-view").addEventListener("click", e => { const b = e.target.closest("butto
 const ckNote = ref => { const i = $$("#ck-flagged [data-note]").find(x => x.dataset.note === ref); return i ? i.value : ""; };
 const ckReason = ref => { const i = $$("#ck-flagged [data-reason]").find(x => x.dataset.reason === ref); return i ? i.value : ""; };
 $("#ck-flagged").addEventListener("click", e => {
+  const n = e.target.closest("[data-ns]");
+  if (n) return ckAct(() => post(`api/check/side/${CK.side}/ns`, { ref: n.dataset.ref, on: true, all: n.dataset.ns === "all" }),
+    `${n.dataset.ref}: not stuffed ${n.dataset.ns === "all" ? "on every board of this design" : "on this board"}. Undo it under NOT STUFFED.`);
   const b = e.target.closest("[data-ans]"); if (!b) return;
   const cur = (CK.st.check.sides[CK.side].results || []).find(r => r.ref === b.dataset.ref);
-  const ans = cur && cur.answer === b.dataset.ans ? null : b.dataset.ans;
-  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans, note: ckNote(b.dataset.ref), reason: ckReason(b.dataset.ref), missed: !!(cur && cur.missed) }),
-    ans ? `Learned: ${b.dataset.ref} kept as a ${ans === "correct" ? "good" : "bad"} example.` : `${b.dataset.ref}: answer cleared and its example forgotten.`);
+  const missing = b.dataset.ans === "missing", was = cur && cur.answer === "wrong" ? (cur.reason === "missing" ? "missing" : "wrong") : cur && cur.answer;
+  const ans = was === b.dataset.ans ? null : missing ? "wrong" : b.dataset.ans;
+  ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref: b.dataset.ref, answer: ans, note: ckNote(b.dataset.ref), reason: missing ? "missing" : ckReason(b.dataset.ref), missed: !!(cur && cur.missed) }),
+    ans ? `Learned: ${b.dataset.ref} kept as a ${ans === "correct" ? "good" : missing ? "missing (bad)" : "bad"} example.` : `${b.dataset.ref}: answer cleared and its example forgotten.`);
 });
 $("#ck-flagged").addEventListener("change", e => {
   const i = e.target.closest("[data-note], [data-reason]"); if (!i) return;
@@ -1236,6 +1254,8 @@ $("#ck-flagged").addEventListener("change", e => {
   if (cur && cur.answer) ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref, answer: cur.answer, note: ckNote(ref), reason: ckReason(ref), missed: !!cur.missed }), "Saved with the example.");
 });
 $("#ck-ok").addEventListener("click", e => {
+  const u = e.target.closest("[data-unns]");
+  if (u) return ckAct(() => post(`api/check/side/${CK.side}/ns`, { ref: u.dataset.unns, on: false }), `${u.dataset.unns}: NS undone, it's checked again.`);
   if (!e.target.closest("#ck-miss")) return;
   const ref = $("#ck-miss-ref").value;
   ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref, answer: "wrong", note: $("#ck-miss-note").value, reason: $("#ck-miss-reason").value, missed: true }),

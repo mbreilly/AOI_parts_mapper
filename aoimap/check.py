@@ -44,14 +44,17 @@ MAX_EXAMPLES = 20           # learned examples of each kind (good, bad) kept for
 # These come from the PTC station's photos; tune them on real boards.
 
 # why a part is wrong, as the tester picks it
-REASONS = {"reversed": "Reversed", "missing": "Missing / not fitted", "wrong_part": "Wrong part", "damaged": "Damaged",
+REASONS = {"reversed": "Reversed", "missing": "Missing", "wrong_part": "Wrong part", "damaged": "Damaged",
            "shifted": "Misplaced / shifted", "other": "Other"}
 
 # called with (board, side) whenever a side's learned examples change (the database copy follows)
 LEARNED_LISTENERS = []
 
 STATUS_COLOURS = {"ok": (80, 190, 80), "reversed": (60, 60, 230), "rotated": (60, 60, 230), "check": (40, 170, 240),
-                  "fault": (60, 60, 230)}   # fault: looks like a learned bad example (a known fault)
+                  "fault": (60, 60, 230),   # fault: looks like a learned bad example (a known fault)
+                  "ns": (150, 150, 150)}    # ns: not stuffed, left off this board on purpose (not a fault)
+FINE = ("ok", "ns")         # statuses that need no answer
+ALL_BOARDS = "*"            # the not-stuffed key for every board of a design
 
 
 def root(data: Path) -> Path:
@@ -131,9 +134,10 @@ def learned_dir(data: Path, board: str, side: str) -> Path:
 
 def load_examples(data: Path, board: str, side: str) -> dict:
     """{"examples": [{id, ref, label: good|bad, note, serial, check, date, file}],
-    "reference_wrong": {reference uid: [ref, ...]}}"""
+    "reference_wrong": {reference uid: [ref, ...]}, "not_stuffed": {serial or ALL_BOARDS: [ref, ...]}}"""
     d = pj._read_json(learned_dir(data, board, side) / "examples.json", {}) or {}
-    return {"examples": d.get("examples", []), "reference_wrong": d.get("reference_wrong", {})}
+    return {"examples": d.get("examples", []), "reference_wrong": d.get("reference_wrong", {}),
+            "not_stuffed": d.get("not_stuffed", {})}
 
 
 def _save_examples(data: Path, board: str, side: str, d: dict):
@@ -208,6 +212,34 @@ def set_reference_wrong(data: Path, board: str, side: str, reference: str, ref: 
     _save_examples(data, board, side, d)
 
 
+def ns_key(serial: str, uid: str) -> str:
+    """Which board a not-stuffed answer is about: its serial, or the photo's check or project when it has none."""
+    return (serial or "").strip() or f"#{uid}"
+
+
+def set_not_stuffed(data: Path, board: str, side: str, key: str, ref: str, on: bool = True):
+    """Marks a part not stuffed (NS: left off on purpose, not a fault) on one board (key from ns_key),
+    or on every board of the design (key ALL_BOARDS); on=False undoes it."""
+    d = load_examples(data, board, side)
+    refs = set(d["not_stuffed"].get(key, []))
+    refs = refs | {ref} if on else refs - {ref}
+    if refs:
+        d["not_stuffed"][key] = sorted(refs)
+    else:
+        d["not_stuffed"].pop(key, None)
+    _save_examples(data, board, side, d)
+
+
+def not_stuffed(data: Path, board: str, side: str, key: str) -> dict:
+    """{ref: "board" | "all"}: the parts not stuffed on this board, and on every board of the design."""
+    ns = load_examples(data, board, side)["not_stuffed"]
+    return {r: "board" for r in ns.get(key, [])} | {r: "all" for r in ns.get(ALL_BOARDS, [])}
+
+
+def ns_why(scope: str) -> str:
+    return "not stuffed on any board of this design" if scope == "all" else "not stuffed on this board"
+
+
 def taught_refs(data: Path, board: str, side: str) -> set:
     """Parts with at least one learned example on this side."""
     return {e["ref"] for e in load_examples(data, board, side)["examples"]}
@@ -245,14 +277,18 @@ def example_images(data: Path, board: str, side: str) -> dict:
     return out
 
 
-def _learned_match(area, ex, size):
+def _learned_match(area, ex, size, either_way: bool = False):
     """How well a learned example matches a part: the best fit near where it should be, or -1 when
     the example's polarity mark points the other way (so a reversed part's example doesn't stand for
-    the part the right way round, and the other way about)."""
+    the part the right way round, and the other way about). either_way: a non-polarised part, which
+    matches its example turned round as well."""
     w, h = size
     t = ex if (ex.shape[1], ex.shape[0]) == (w, h) else cv2.resize(ex, (w, h), interpolation=cv2.INTER_AREA)
     if area.shape[0] < h or area.shape[1] < w or float(t.std()) < 1e-3:
         return -1.0
+    if either_way:
+        return max(float(cv2.minMaxLoc(cv2.matchTemplate(area, v, cv2.TM_CCOEFF_NORMED))[1])
+                   for v in (t, cv2.rotate(t, cv2.ROTATE_180)))
     _, s, _, (bx, by) = cv2.minMaxLoc(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))
     anti = (t - cv2.rotate(t, cv2.ROTATE_180)) / 2
     if float(anti.std() / (t.std() + 1e-6)) > MARK_STRENGTH:
@@ -382,14 +418,15 @@ def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = Non
         out.update(status="check", why="no mark shows on the reference photo, so look at it by eye")
     else:
         out.update(status="check", why="its mark can't be made out in this photo")
-    if reference_wrong and out["status"] in ("ok", "reversed"):
+    if reference_wrong and part["kind"] != "look" and out["status"] in ("ok", "reversed"):
         out.update(status="ok", why="the right way round: the reference shows this part wrong") if out["status"] == "reversed" else \
             out.update(status="reversed", why="looks like the reference, which shows this part the wrong way round")
     learned = learned or {}
-    good = [(_learned_match(area, im, (w, h)), e) for im, e in learned.get("good", [])]
-    bad = [(_learned_match(area, im, (w, h)), e) for im, e in learned.get("bad", [])]
+    look = part["kind"] == "look"
+    good = [(_learned_match(area, im, (w, h), look), e) for im, e in learned.get("good", [])]
+    bad = [(_learned_match(area, im, (w, h), look), e) for im, e in learned.get("bad", [])]
     # the closest right look: confirmed-good examples and the reference (turned round if it shows the part wrong)
-    best_good = max([v for v, _ in good] + [rev if reference_wrong else same])
+    best_good = max([v for v, _ in good] + [max(same, rev) if look else rev if reference_wrong else same])
     best_bad, bad_ex = max(bad, key=lambda v: v[0]) if bad else (-1.0, None)
     if best_bad >= MIN_MATCH and best_bad > best_good + LEARNED_MARGIN:
         seen = " ".join(v for v in (bad_ex.get("serial"), bad_ex.get("date", "")[:10]) if v)
@@ -412,6 +449,11 @@ def overlay(img, results, width: int = 1600) -> bytes:
     for r in results:
         x, y, w, h = (int(v * s) for v in r["box"])
         st = {"correct": "ok", "wrong": "reversed"}.get(r.get("answer"), r["status"])
+        if st == "ns":      # not stuffed: a grey dashed box, labelled NS
+            ph.dashed_poly(vis, [(x - 3, y - 3), (x + w + 3, y - 3), (x + w + 3, y + h + 3), (x - 3, y + h + 3)], STATUS_COLOURS[st], t)
+            cv2.putText(vis, f"{r['ref']} NS", (x, max(14, y - 7)), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * vis.shape[1] / 1600 + 0.2,
+                        STATUS_COLOURS[st], 2)
+            continue
         cv2.rectangle(vis, (x - 3, y - 3), (x + w + 3, y + h + 3), STATUS_COLOURS[st], t)
         if r["status"] != "ok" or r.get("answer"):
             cv2.putText(vis, r["ref"], (x, max(14, y - 7)), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * vis.shape[1] / 1600 + 0.2,
@@ -438,7 +480,7 @@ def result_of(c: dict) -> str:
     if any(r.get("answer") == "wrong" for r in rs):
         return "FAIL"
     done = [s for s in c["sides"].values() if s.get("aligned")]
-    if done and all(r["status"] == "ok" or r.get("answer") for r in rs):
+    if done and all(r["status"] in FINE or r.get("answer") for r in rs):
         return "PASS"
     return "OPEN"
 
@@ -450,7 +492,7 @@ def row(c: dict) -> dict:
         s = c["sides"].get(side, {})
         rs = s.get("results", [])
         out[side] = {"aligned": bool(s.get("aligned")), "checked": len(rs),
-                     "flagged": sum(1 for r in rs if r["status"] != "ok"),
+                     "flagged": sum(1 for r in rs if r["status"] not in FINE),
                      "wrong": [r["ref"] for r in rs if r.get("answer") == "wrong"]}
     return out
 
@@ -615,21 +657,53 @@ class Checks:
         learned = example_images(self.data, board, side)
         wrong = set(load_examples(self.data, board, side)["reference_wrong"].get(self.cur["reference"], []))
         results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong) for p in parts]
-        usual = [r for r in results if r["ref"] not in pending]
+        ns = self._ns(side)
+        usual = [r for r in results if r["ref"] not in pending and r["ref"] not in ns]
         if usual and np.median([max(r["score"], r["turned"]) for r in usual]) < 0.45 and not (force and len(usual) < 3):
             return False
         for r in results:
-            if r["ref"] in pending:      # added by hand to wait for a photo: always asked until taught
+            if r["ref"] in ns:           # not stuffed on purpose: not a fault, nothing to ask
+                r.update(seen={"status": r["status"], "why": r["why"]}, status="ns", why=ns_why(ns[r["ref"]]))
+            elif r["ref"] in pending:    # added by hand to wait for a photo: always asked until taught
                 r.update(status="check", new=True, why="new part, teach me: is it right?")
         d = folder(self.data, self.cur["uid"]) / side
         cv2.imwrite(str(d / "aligned.jpg"), aligned, [cv2.IMWRITE_JPEG_QUALITY, 92])
         self._img[(self.cur["uid"], side, "aligned")] = aligned
         st.update(aligned=True, need_points=False, message=msg, H=np.asarray(H).tolist(), results=results, skipped=skipped)
         (d / "result.jpg").write_bytes(overlay(aligned, results))
-        flagged = [r["ref"] for r in results if r["status"] != "ok"]
+        flagged = [r["ref"] for r in results if r["status"] not in FINE]
         self._touch(f"{side.capitalize()} checked: {len(results)} parts, "
                     + (f"{len(flagged)} flagged ({', '.join(flagged[:12])}{' ...' if len(flagged) > 12 else ''})" if flagged else "none flagged"))
         return True
+
+    def _ns(self, side) -> dict:
+        return not_stuffed(self.data, self.cur["board"], side, ns_key(self.cur.get("serial", ""), self.cur["uid"]))
+
+    def set_ns(self, side, ref, on: bool = True, everywhere: bool = False):
+        """NS: the part is not stuffed on this board (everywhere: on every board of the design from now
+        on), so it isn't a fault and isn't asked about; on=False undoes it (both). An answer already
+        given for it is cleared, with its example."""
+        st = self._need(side)
+        c, board = self.cur, self.cur["board"]
+        key = ns_key(c.get("serial", ""), c["uid"])
+        if on:
+            set_not_stuffed(self.data, board, side, ALL_BOARDS if everywhere else key, ref)
+        else:
+            for k in (key, ALL_BOARDS):
+                set_not_stuffed(self.data, board, side, k, ref, False)
+        r = next((r for r in st.get("results", []) if r["ref"] == ref), None)
+        if r:
+            if on and r.get("answer"):
+                self.answer(side, ref, None)
+            ns = self._ns(side)
+            if ref in ns:
+                r.setdefault("seen", {"status": r["status"], "why": r["why"]})
+                r.update(status="ns", why=ns_why(ns[ref]))
+            elif "seen" in r:
+                r.update(r.pop("seen"))
+            (folder(self.data, c["uid"]) / side / "result.jpg").write_bytes(overlay(self._aligned(c["uid"], side), st["results"]))
+        self._touch(f"{side.capitalize()} {ref}: " + (("NOT STUFFED on every board of this design" if everywhere
+                                                      else "NOT STUFFED on this board") if on else "NS undone, checked again"))
 
     def answer(self, side, ref, answer, note=None, missed=False, reason=None):
         """The tester's answer for a part, which also teaches the check (see learned examples). A
@@ -643,6 +717,8 @@ class Checks:
             raise ValueError(f"{ref} isn't checked on this side.")
         answer = answer or None
         c, board = self.cur, self.cur["board"]
+        if answer and r["status"] == "ns":
+            raise ValueError(f"{ref} is marked not stuffed: undo NS first.")
         if r["status"] != "ok" or answer == "correct":
             missed = False
         elif answer is None:

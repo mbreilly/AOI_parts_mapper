@@ -935,6 +935,85 @@ def test_check_in_progress_is_put_away_when_another_project_is_chosen():
         srv.shutdown()
 
 
+def test_non_polarised_parts_have_no_pin_1_dot_and_any_turn_passes():
+    from aoimap import check as ck
+    img = np.full((120, 200, 3), 60, np.uint8)
+    poly = [[40, 40], [80, 40], [80, 60], [40, 60]]
+    rec = {"ref": "X", "value": "", "poly": poly, "centre": [60, 50], "box": [40, 40, 40, 20], "px": 20.0,
+           "pin1": [42, 50], "checkable": True, "reason": ""}
+    red = lambda jpg: int(((lambda v: (v[..., 2] > 150) & (v[..., 0] < 100) & (v[..., 1] < 100))(
+        cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR))).sum())
+    # the side map: a pin 1 dot for a polarised part, just the outline for a look-only one
+    assert red(ph.overlay(img, [dict(rec, kind="ic")], width=0)) > 0
+    assert red(ph.overlay(img, [dict(rec, kind="look")], width=0)) == 0
+    # a look-only part with one end marked, turned round on the board: fine, and its learned examples count either way
+    ref = np.full((80, 120, 3), 90, np.uint8); ref[30:50, 40:80] = 200; ref[30:50, 40:48] = 20
+    board = ref.copy(); board[30:50, 40:80] = cv2.rotate(ref[30:50, 40:80], cv2.ROTATE_180)
+    part = {"ref": "C1", "kind": "look", "value": "", "box": [40, 30, 40, 20]}
+    assert ck.check_part(board, ref, part, 10)["status"] == "ok"
+    assert ck.check_part(board, ref, part, 10, reference_wrong=True)["status"] == "ok"
+    pol = ck.check_part(board, ref, dict(part, kind="tantalum"), 10)
+    assert pol["status"] == "reversed", pol
+    # a fault taught before (here: the part missing) is still found
+    empty = ref.copy(); empty[30:50, 40:80] = 90; empty[34:46, 42:46] = 160; empty[34:46, 74:78] = 160
+    ex = empty[24:56, 34:86].astype(np.float32)
+    bad = ck.check_part(empty, ref, part, 10, learned={"bad": [(ex, {"serial": "7"})]})
+    assert bad["status"] == "fault", bad
+
+
+def test_missing_and_not_stuffed_answers():
+    from aoimap import teach as tl
+    from aoimap.check import Checks, load, load_examples
+    b = reference_board()
+    c = Checks(b.data)
+    board, H2 = b.project["board"], fx.camera("front", tilt_deg=-3, ppi=280)
+    shot = lambda *rev: cv2.imencode(".png", fx.render("front", H2, reversed_refs=rev))[1].tobytes()
+
+    def run(serial, *rev):
+        c.start(b.project["uid"], serial)
+        c.photo("front", shot(*rev))
+        return {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+
+    res = run("SN-1", "C3")
+    assert res["C3"]["status"] == "reversed" and res["D8"]["status"] == "check"
+    # MISSING is a bad answer with the reason "missing": a fault
+    c.answer("front", "C3", "wrong", reason="missing")
+    assert load_examples(b.data, board, "front")["examples"][-1]["reason"] == "missing" and c.cur["result"] == "FAIL"
+    # NS on this board: not a fault, its answer and example go, and nothing is left to answer
+    c.set_ns("front", "C3")
+    c.set_ns("front", "D8")
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["C3"]["status"] == res["D8"]["status"] == "ns" and not res["C3"].get("answer")
+    assert not load_examples(b.data, board, "front")["examples"]
+    for r in c.cur["sides"]["front"]["results"]:
+        if r["status"] not in ("ok", "ns"):
+            c.answer("front", r["ref"], "correct")
+    assert load(b.data, c.cur["uid"])["result"] == "PASS"
+    assert load_examples(b.data, board, "front")["not_stuffed"] == {"SN-1": ["C3", "D8"]}
+    src = f"check/{c.cur['uid']}/front"
+    assert tl.inspect(b.data, src, "C3")["verdict"] == "ns" and tl.answers(b.data, board, src)["D8"] == "ns"
+    try:
+        c.answer("front", "C3", "correct"); raise AssertionError("answered an NS part")
+    except ValueError:
+        pass
+    # undo: checked and asked about again, as before
+    c.set_ns("front", "D8", False)
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["D8"]["status"] == "check" and c.cur["result"] == "OPEN"
+    # only that serial: the next board is checked as usual, until NS is set for every board of the design
+    res = run("SN-2")
+    assert res["C3"]["status"] == "ok" and res["D8"]["status"] == "check"
+    c.set_ns("front", "D8", everywhere=True)
+    res = run("SN-3")
+    assert res["D8"]["status"] == "ns" and "any board" in res["D8"]["why"]
+    # the side map of a mapped board shows it NS, and undoing it there clears every scope
+    psrc = f"project/{b.project['uid']}/front"
+    assert tl.answers(b.data, board, psrc)["D8"] == "ns"
+    b.set_ns(psrc, "D8", False)
+    assert load_examples(b.data, board, "front")["not_stuffed"] == {"SN-1": ["C3"]}
+    assert run("SN-4")["D8"]["status"] == "check"
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

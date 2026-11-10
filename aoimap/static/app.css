@@ -165,6 +165,8 @@ td.no { color: var(--dimInk); opacity: .7; }
 .verdict.v-correct { background: #3E8E41; color: #fff; }
 .verdict.v-wrong { background: #C0392B; color: #fff; }
 .verdict.v-unsure { background: var(--accent); color: var(--panelEdge); }
+.verdict.v-ns { background: #777; color: #fff; }
+.st-ns { color: #aaa; }
 .verdict.v-reference { background: var(--screw); color: var(--panelEdge); }
 #lines td.lstat { cursor: pointer; font-size: 12px; white-space: normal; min-width: 180px; }
 #lines tr.dnp td { opacity: .8; }
