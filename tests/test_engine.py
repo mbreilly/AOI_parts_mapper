@@ -1014,6 +1014,95 @@ def test_missing_and_not_stuffed_answers():
     assert run("SN-4")["D8"]["status"] == "check"
 
 
+# ---- the board viewer on the Map tab (netlist.py, viewer.py) ---------------------------------
+
+def test_nets_and_pins_read_from_the_odb():
+    from aoimap import netlist as nl
+    d = nl.load(ODB)
+    assert d["nets"] == fx.NETS and d["units"] == "inch"
+    parts = {c["ref"]: c for side in ("top", "bot") for c in d["parts"][side]}
+    assert len(parts) == len(fx.PARTS)
+    net = lambda ref, pin: next((d["nets"][q[3]] if q[3] >= 0 else None) for q in parts[ref]["pins"] if q[0] == pin)
+    # top pins carry their net; the bottom's come from the SNT records; $NONE$ is no net
+    assert net("U1", "1") == "VCC" and net("U1", "2") == "SDA" and net("U1", "5") == "GND"
+    assert net("UB1", "2") == "SDA" and net("DB4", "2") == "GND" and net("RB1", "1") == "VCC"
+    assert net("FIDT1", "1") is None and net("U2", "2") is None
+    assert any("eda/data" in n for n in d["notes"])
+    u2 = next(p for p in odblib.load(ODB)[0].parts if p.ref == "U2")
+    assert {q[0]: q[1:3] for q in parts["U2"]["pins"]} == u2.pins       # the same positions as the parts map's
+    pk = d["packages"][parts["C1"]["package"]]
+    assert pk["name"] == "CAPT3528" and [round(v, 4) for v in pk["pins"][0][1:3]] == [0.02, 0.01] and not pk["pins"][0][3]
+    assert d["packages"][parts["FIDT1"]["package"]]["pins"][0][3] is True     # a round pad
+    assert d["outline"][:4] == [[0, 0], [6, 0], [6, 4], [0, 4]]
+
+
+def _ptc_odb():
+    for f in sorted((Path.home() / "aoimap-data" / "projects").glob("*-ptc4a_v1j/source/odb.*")):
+        return f
+    return None
+
+
+def test_ptc_nets():
+    """On the real PTC board, when its ODB++ is on this machine."""
+    from aoimap import netlist as nl
+    f = _ptc_odb()
+    if not f:
+        print("skip test_ptc_nets (no PTC ODB++ here)")
+        return
+    d = nl.load(f)
+    count = {}
+    for side in ("top", "bot"):
+        for c in d["parts"][side]:
+            for q in c["pins"]:
+                if q[3] >= 0:
+                    count[d["nets"][q[3]]] = count.get(d["nets"][q[3]], 0) + 1
+    assert len(d["nets"]) > 400 and count["GND"] > 500 and count["VCC_3V3"] > 2 and count["VP48_IN"] > 2
+    assert "$NONE$" not in count
+    lt3 = next(c for c in d["parts"]["top"] if c["ref"] == "LT3")
+    assert [d["nets"][q[3]] for q in lt3["pins"]][0] == "VP48_IN"
+    assert len(d["outline"]) >= 4 and not d["notes"]
+
+
+def test_viewer_api():
+    from aoimap import photo as ph
+    b = reference_board()
+    app, srv, port = _serve(b.data)
+    try:
+        g = _api(port, "api/viewer/geometry")
+        assert g["board"] == b.name and g["nets"] == fx.NETS and g["units"] == "inch"
+        parts = {p["r"]: p for p in g["parts"]}
+        assert len(parts) == len(fx.PARTS) and parts["FIDT1"]["f"] and parts["UB1"]["s"] == "bot"
+        assert parts["C1"]["v"] == "T491B106K" and g["lines"][parts["C1"]["l"]]["qty"] == 8
+        assert g["sides"]["front"]["photo"] and not g["sides"]["back"]["photo"]
+        assert g["sides"]["front"]["orient"] == [1, -1] and g["sides"]["back"]["orient"] == [1, 1]
+        pins = _api(port, "api/viewer/pins")["pins"]
+        sda = g["nets"].index("SDA")
+        assert [q[0] for q in pins["U1"] if q[3] == sda] == ["2"] and [q[0] for q in pins["UB1"] if q[3] == sda] == ["2"]
+        assert pins["C1"][0][4:6] == [0.02, 0.01]
+        assert (b.data / "boards" / b.name / "nets.json").is_file()       # read once per design
+        st = _api(port, "api/viewer/status")["parts"]
+        assert st["C1"]["st"] == "checked" and st["C1"]["kind"] == "tantalum"
+        assert st["R1"]["st"] == "off" and st["UB1"]["st"] == "nophoto"
+        b.teach(f"project/{b.project['uid']}/front", "C3", "bad", "reversed")
+        b.set_ns(f"project/{b.project['uid']}/front", "C5")
+        st = _api(port, "api/viewer/status")["parts"]
+        assert st["C3"]["st"] == "bad" and st["C5"]["st"] == "ns"
+        # the front photo, turned into the viewer's frame: the fiducials are where the design has them
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/viewer/photo/front.jpg?v=1", timeout=60) as r:
+            img = cv2.imdecode(np.frombuffer(r.read(), np.uint8), cv2.IMREAD_COLOR)
+        x0, y0, x1, y1 = g["sides"]["front"]["rect"]
+        k = img.shape[1] / (x1 - x0)
+        assert abs(img.shape[0] / (y1 - y0) - k) < 0.01 * k
+        pads = ph.find_pads(img)
+        for ref in ("FIDT1", "FIDT4"):
+            want = np.float32([(parts[ref]["x"] - x0) * k, (-parts[ref]["y"] - y0) * k])
+            assert np.linalg.norm(pads - want, axis=1).min() < 3, ref
+        assert "error" in _api(port, "api/viewer/photo/back.jpg")
+    finally:
+        srv.shutdown()
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

@@ -159,6 +159,7 @@ function goTab(t) {
   if (tab === "front" || tab === "back") { loadAnchors(tab); $("#look-insp").innerHTML = ""; $("#look-ref").value = ""; ui.highlight = null; }
   if (tab === "history") loadHistory();
   if (tab === "check") loadCheck();
+  if (tab === "map" && S && S.project) bvOpen();
 }
 document.addEventListener("click", e => {
   const b = e.target.closest("[data-goto]"); if (!b) return;
@@ -853,6 +854,7 @@ function renderMap() {
   $("#map-ref-note").textContent = isRef ? `Other ${S.project.board} boards are checked against this one on the Check a board tab. Press again to stop using it.`
     : "Once this board has been checked by hand, make it the reference: other boards of this type can then be checked against it on the Check a board tab.";
   $("#map-folder").textContent = `Everything for this board is kept with the project in the app's data folder under projects/${S.project ? S.project.uid : ""}/ (the ODB++ and BOM, design.json, parts_map.csv, and each side's reference.jpg, alignment.json, parts.json and map.jpg), and listed on the History tab.`;
+  renderViewer();
   $("#unchecked tbody").innerHTML = rows.map(r => `<tr><td>${r.side}</td><td>${esc(r.ref)}</td><td>${KIND_NAMES[r.kind]}</td><td>${esc(r.value)}</td><td>${esc(r.reason)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="no">Nothing yet. Line up a photo of each side first.</td></tr>`;
 }
@@ -867,6 +869,390 @@ $("#map-ref").addEventListener("click", async () => {
     render();
   } catch (e) { say(e.message, true); }
 });
+
+// ---- 5 map: the board viewer ----------------------------------------------------------------
+// The design's parts, pins and nets drawn on a canvas, on the lined-up photo of the side when there
+// is one. Everything is drawn in view coordinates: board units with the side's orientation applied
+// (x' = sx x, y' = sy y, see viewer.py), the photo already warped into that frame by the server.
+const BV = {
+  uid: null, g: null, pins: null, st: {}, side: "front", photoOn: true, photoOp: 85, rats: false,
+  sel: { ref: null, net: null, list: null }, view: null, img: {}, parts: {}, netPins: null, knob: null, frame: 0, loading: false,
+};
+try { Object.assign(BV, JSON.parse(localStorage.getItem("aoimap-bv") || "{}"), { sel: { ref: null, net: null, list: null } }); } catch (e) { }
+const keepBv = () => { try { localStorage.setItem("aoimap-bv", JSON.stringify({ side: BV.side, photoOn: BV.photoOn, photoOp: BV.photoOp, rats: BV.rats })); } catch (e) { } };
+const BV_COL = { good: "#6FCF73", checked: "#6FCF73", bad: "#FF6B5B", ns: "#9A9A9A", skipped: "#E0A33A", nophoto: "#E0A33A", off: "#8A909C" };
+const BV_TEXT = { good: "GOOD (answered on this board)", checked: "checked", bad: "BAD (answered on this board)", ns: "NS: not stuffed",
+  skipped: "in the check, but the photo can't show it", nophoto: "in the check, no lined-up photo of its side yet", off: "not in the check" };
+const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+const sideOf = p => p.s === "top" ? "front" : "back";
+
+async function bvOpen() {
+  if (!S || !S.project) return;
+  const uid = S.project.uid;
+  if (BV.loading) return;
+  BV.loading = true;
+  try {
+    const g = await api("api/viewer/geometry");
+    const fresh = BV.uid !== uid;
+    BV.g = g; BV.uid = uid; BV.parts = {};
+    for (const p of g.parts) {
+      const t = p.a * Math.PI / 180, c = Math.cos(t), s = Math.sin(t), m = p.m ? -1 : 1, [x0, y0, x1, y1] = p.b;
+      p.c = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([u, v]) => [p.x + c * m * u - s * v, p.y + s * m * u + c * v]);
+      p.cos = c; p.sin = s;
+      BV.parts[p.r] = p;
+    }
+    if (fresh) { BV.sel = { ref: null, net: null, list: null }; BV.view = null; BV.pins = null; BV.netPins = null; BV.img = {}; }
+    $("#dl-bv").innerHTML = g.parts.filter(p => !p.f).map(p => `<option value="${esc(p.r)}">${esc(p.v || p.k)}</option>`).join("")
+      + g.nets.map(n => `<option value="${esc(n)}">net</option>`).join("");
+    $("#bv-notes").textContent = g.notes.join(" ");
+    await bvStatus();
+    bvPhoto();
+    bvDraw();
+    if (!BV.pins) {
+      const r = await api("api/viewer/pins");
+      BV.pins = r.pins; BV.netPins = {};
+      for (const [ref, rows] of Object.entries(BV.pins)) rows.forEach((q, i) => { if (q[3] >= 0) (BV.netPins[q[3]] = BV.netPins[q[3]] || []).push([ref, i]); });
+      bvInfo(); bvDraw();
+    }
+  } catch (e) { say(e.message, true); }
+  finally { BV.loading = false; }
+}
+async function bvStatus() {
+  try { BV.st = (await api("api/viewer/status")).parts; } catch (e) { BV.st = {}; }
+  bvInfo(); bvDraw();
+}
+// the side's photo, warped into the viewer's frame by the server
+function bvPhoto() {
+  const sd = BV.g && BV.g.sides[BV.side];
+  if (!sd || !sd.photo || BV.img[BV.side] && BV.img[BV.side].stamp === sd.stamp) return;
+  const im = new Image();
+  im.onload = () => bvDraw();
+  im.src = `api/viewer/photo/${BV.side}.jpg?v=${encodeURIComponent(BV.uid + "-" + sd.stamp)}`;
+  BV.img[BV.side] = { stamp: sd.stamp, im };
+}
+function bvCanvas() {
+  const cv = $("#bv-canvas"), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  return { cv, w, h, dpr };
+}
+const bvO = () => BV.g.sides[BV.side].orient;
+const toW = (x, y) => { const [sx, sy] = bvO(); return [sx * x, sy * y]; };           // board -> view
+function bvFit() {
+  const { w, h } = bvCanvas(); if (!w || !BV.g) return;
+  const [x0, y0, x1, y1] = BV.g.sides[BV.side].rect;
+  const s = Math.min(w / (x1 - x0), h / (y1 - y0));
+  BV.view = { s, tx: w / 2 - s * (x0 + x1) / 2, ty: h / 2 - s * (y0 + y1) / 2 };
+}
+const toS = (x, y) => { const [wx, wy] = toW(x, y), v = BV.view; return [wx * v.s + v.tx, wy * v.s + v.ty]; };   // board -> screen
+const fromS = (px, py) => { const v = BV.view, [sx, sy] = bvO(); return [sx * (px - v.tx) / v.s, sy * (py - v.ty) / v.s]; };
+function bvDraw() {
+  if (tab !== "map" || !BV.g || BV.frame) return;
+  BV.frame = requestAnimationFrame(() => { BV.frame = 0; bvPaint(); });
+}
+function bvPaint() {
+  const { cv, w, h, dpr } = bvCanvas(); if (!w) return;
+  if (!BV.view) bvFit();
+  const ctx = cv.getContext("2d"), g = BV.g, layer = SIDES[BV.side], v = BV.view, sd = g.sides[BV.side];
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#141518"; ctx.fillRect(0, 0, w, h);
+  const pic = BV.photoOn && sd.photo && BV.img[BV.side] && BV.img[BV.side].im.complete && BV.img[BV.side].im.naturalWidth ? BV.img[BV.side].im : null;
+  const path = pts => { ctx.beginPath(); pts.forEach(([x, y], i) => { const [a, b] = toS(x, y); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); ctx.closePath(); };
+  // the board: its outline, plain, with the photo over it
+  path(g.outline); ctx.fillStyle = "#1B2620"; ctx.fill();
+  if (pic) {
+    const [x0, y0, x1, y1] = sd.rect;
+    ctx.globalAlpha = BV.photoOp / 100;
+    ctx.imageSmoothingEnabled = v.s * (x1 - x0) < pic.naturalWidth * 2;
+    ctx.drawImage(pic, x0 * v.s + v.tx, y0 * v.s + v.ty, (x1 - x0) * v.s, (y1 - y0) * v.s);
+    ctx.globalAlpha = 1;
+  }
+  path(g.outline); ctx.strokeStyle = pic ? "rgba(224,163,58,.35)" : "#4F6B58"; ctx.lineWidth = 1.2; ctx.stroke();
+  const sel = BV.sel, selPart = sel.ref && BV.parts[sel.ref];
+  const netSet = sel.net != null && BV.netPins ? new Set((BV.netPins[sel.net] || []).map(([r]) => r)) : null;
+  // the other side's parts, faint (plain view only)
+  if (!pic) {
+    ctx.strokeStyle = "rgba(140,150,165,.13)"; ctx.lineWidth = 1;
+    for (const p of g.parts) if (p.s !== layer) { path(p.c); ctx.stroke(); }
+  }
+  // pins: shown once they are big enough to see, and always those of the chosen part or net
+  const pinPx = BV.pins ? v.s : 0;
+  const drawPin = (p, q, mode) => {
+    const [px, py] = toS(q[1], q[2]);
+    let pw = q[4] * v.s, ph = q[5] * v.s;
+    if (!pw || !ph) { pw = ph = Math.max(3, 0.02 * v.s); }
+    if (px < -pw - 40 || py < -ph - 40 || px > w + pw + 40 || py > h + ph + 40) return;
+    const [sx, sy] = bvO(), ang = Math.atan2(sy * p.sin, sx * p.cos);
+    ctx.save(); ctx.translate(px, py); ctx.rotate(ang);
+    ctx.beginPath();
+    if (q[6]) ctx.ellipse(0, 0, Math.max(pw, 1.5) / 2, Math.max(ph, 1.5) / 2, 0, 0, 2 * Math.PI); else ctx.rect(-pw / 2, -ph / 2, Math.max(pw, 1.5), Math.max(ph, 1.5));
+    if (mode === "net") { ctx.fillStyle = "#FFD45E"; ctx.fill(); ctx.strokeStyle = "#141518"; ctx.lineWidth = 1; ctx.stroke(); }
+    else if (mode === "part") { ctx.fillStyle = pic ? "rgba(224,163,58,.55)" : "#B08A45"; ctx.fill(); }
+    else if (mode === "far") { ctx.strokeStyle = "#FFD45E"; ctx.lineWidth = 1.5; ctx.stroke(); }
+    else if (pic) { ctx.strokeStyle = "rgba(220,220,210,.45)"; ctx.lineWidth = 1; ctx.stroke(); }
+    else { ctx.fillStyle = q[3] >= 0 ? "#7D7C70" : "#5A5A55"; ctx.fill(); }
+    ctx.restore();
+  };
+  if (BV.pins) {
+    const showAll = 0.012 * pinPx > 2;
+    for (const p of g.parts) {
+      if (p.s !== layer) continue;
+      const rows = BV.pins[p.r] || [];
+      const isSel = p === selPart;
+      if (!showAll && !isSel && !(netSet && netSet.has(p.r))) continue;
+      rows.forEach(q => {
+        const mode = sel.net != null && q[3] === sel.net ? "net" : isSel ? "part" : "";
+        if (showAll || mode) drawPin(p, q, mode);
+      });
+    }
+    // net pins on the other side, as rings
+    if (netSet) for (const [r, i] of BV.netPins[sel.net] || []) { const p = BV.parts[r]; if (p && p.s !== layer) drawPin(p, BV.pins[r][i], "far"); }
+  }
+  // the parts on this side, coloured by their check status
+  ctx.lineJoin = "round";
+  const lab = [];
+  for (const p of g.parts) {
+    if (p.s !== layer) continue;
+    const st = BV.st[p.r], code = p.f ? "fid" : st ? st.st : "off";
+    const col = p.f ? "#8A909C" : BV_COL[code] || BV_COL.off;
+    const on = p === selPart, inNet = netSet && netSet.has(p.r);
+    path(p.c);
+    if (on) { ctx.fillStyle = "rgba(255,212,94,.18)"; ctx.fill(); }
+    ctx.setLineDash(code === "ns" ? [5, 4] : []);
+    ctx.strokeStyle = on ? "#FFD45E" : inNet ? "#FFD45E" : col;
+    ctx.globalAlpha = code === "off" && !on && !inNet ? (pic ? .55 : .7) : 1;
+    ctx.lineWidth = on ? 3 : inNet ? 2 : code === "off" || code === "fid" ? 1 : 1.8;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    const [a, b] = toS(p.x, p.y), size = Math.min(Math.abs(p.b[2] - p.b[0]), Math.abs(p.b[3] - p.b[1])) * v.s;
+    if (on || inNet || size > 22) lab.push([p, a, b, size, on || inNet, col]);
+  }
+  ctx.setLineDash([]);
+  // net lines: the shortest tree joining the chosen net's pins
+  if (BV.rats && netSet) {
+    const pts = (BV.netPins[sel.net] || []).map(([r, i]) => toS(BV.pins[r][i][1], BV.pins[r][i][2]));
+    ctx.strokeStyle = "rgba(255,212,94,.75)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (const [a, b] of bvTree(pts)) { ctx.moveTo(...pts[a]); ctx.lineTo(...pts[b]); }
+    ctx.stroke();
+  }
+  // labels: refs on parts big enough, pin names (and nets) when zoomed in
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (const [p, a, b, size, hi, col] of lab) {
+    const fs = Math.max(10, Math.min(16, size / 4));
+    ctx.font = `${hi ? 700 : 600} ${fs}px ${getComputedStyle(document.body).fontFamily}`;
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(15,15,18,.85)"; ctx.strokeText(p.r, a, b);
+    ctx.fillStyle = hi ? "#FFD45E" : col; ctx.fillText(p.r, a, b);
+  }
+  if (BV.pins) {
+    for (const p of g.parts) {
+      if (p.s !== layer) continue;
+      const isSel = p === selPart;
+      for (const q of BV.pins[p.r] || []) {
+        const pw = Math.min(q[4] || 0.02, q[5] || 0.02) * v.s, big = Math.max(q[4], q[5]) * v.s;
+        const mine = isSel || (sel.net != null && q[3] === sel.net);
+        if (pw < (mine ? 9 : 14)) continue;
+        const [a, b] = toS(q[1], q[2]);
+        if (a < -50 || b < -50 || a > w + 50 || b > h + 50) continue;
+        const fs = Math.max(9, Math.min(14, pw * 0.6));
+        ctx.font = `600 ${fs}px ${getComputedStyle(document.body).fontFamily}`;
+        ctx.lineWidth = 3; ctx.strokeStyle = "rgba(15,15,18,.85)"; ctx.fillStyle = "#F2F2EA";
+        const net = big > 60 && q[3] >= 0 ? g.nets[q[3]] : "";
+        ctx.strokeText(q[0], a, net ? b - fs * 0.55 : b); ctx.fillText(q[0], a, net ? b - fs * 0.55 : b);
+        if (net) { ctx.font = `${Math.max(8, fs - 2)}px ${getComputedStyle(document.body).fontFamily}`; ctx.fillStyle = "#FFD45E"; ctx.strokeText(net, a, b + fs * 0.6); ctx.fillText(net, a, b + fs * 0.6); }
+      }
+    }
+  }
+  $("#bv-side").textContent = BV.side === "front" ? "FRONT" : "BACK";
+}
+// Prim's shortest tree over screen points: [[i, j]]
+function bvTree(pts) {
+  const n = pts.length, out = [];
+  if (n < 2) return out;
+  const best = new Float64Array(n).fill(Infinity), from = new Int32Array(n), done = new Uint8Array(n);
+  let cur = 0; done[0] = 1;
+  for (let k = 1; k < n; k++) {
+    let nb = -1, nd = Infinity;
+    for (let j = 0; j < n; j++) {
+      if (done[j]) continue;
+      const d = (pts[j][0] - pts[cur][0]) ** 2 + (pts[j][1] - pts[cur][1]) ** 2;
+      if (d < best[j]) { best[j] = d; from[j] = cur; }
+      if (best[j] < nd) { nd = best[j]; nb = j; }
+    }
+    done[nb] = 1; out.push([from[nb], nb]); cur = nb;
+  }
+  return out;
+}
+// what is under a point on the screen: a pin (when pins are drawn big enough) or the smallest part
+function bvHit(px, py) {
+  const [x, y] = fromS(px, py), layer = SIDES[BV.side], v = BV.view;
+  let pin = null, pd = Infinity;
+  if (BV.pins) for (const p of BV.g.parts) {
+    if (p.s !== layer) continue;
+    (BV.pins[p.r] || []).forEach((q, i) => {
+      const r = Math.max(q[4] || 0, q[5] || 0, 0.012) / 2, d = Math.hypot(q[1] - x, q[2] - y);
+      if (d <= Math.max(r, 4 / v.s) && d < pd && r * v.s > 2.5) { pd = d; pin = { ref: p.r, i }; }
+    });
+  }
+  if (pin) return pin;
+  let hit = null, area = Infinity;
+  for (const p of BV.g.parts) {
+    if (p.s !== layer) continue;
+    let inside = true, sgn = 0;
+    for (let i = 0; i < 4 && inside; i++) {
+      const [ax, ay] = p.c[i], [bx, by] = p.c[(i + 1) % 4], cr = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+      if (Math.abs(cr) < 1e-12) continue;
+      const s = Math.sign(cr); if (sgn && s !== sgn) inside = false; sgn = s;
+    }
+    const a = Math.abs((p.b[2] - p.b[0]) * (p.b[3] - p.b[1]));
+    if (inside && a < area) { area = a; hit = { ref: p.r }; }
+  }
+  return hit;
+}
+function bvSelect(ref, net = null, centre = false) {
+  BV.sel = { ref, net, list: null };
+  const p = ref && BV.parts[ref];
+  if (p && sideOf(p) !== BV.side && net == null) { BV.side = sideOf(p); keepBv(); bvPhoto(); BV.view = null; }
+  if (centre && p) {
+    if (!BV.view) bvFit();
+    const { w, h } = bvCanvas(), [wx, wy] = toW(p.x, p.y);
+    const size = Math.max(Math.abs(p.b[2] - p.b[0]), Math.abs(p.b[3] - p.b[1]), 0.05);
+    BV.view.s = Math.max(BV.view.s, Math.min(w, h) / (size * 8));
+    BV.view.tx = w / 2 - wx * BV.view.s; BV.view.ty = h / 2 - wy * BV.view.s;
+  }
+  bvInfo(); bvDraw();
+}
+function bvFlip() {
+  if (!BV.g) return;
+  const { w, h } = bvCanvas();
+  const c = BV.view ? fromS(w / 2, h / 2) : null, s = BV.view && BV.view.s;
+  BV.side = BV.side === "front" ? "back" : "front"; keepBv(); bvPhoto();
+  if (c) { const [wx, wy] = toW(...c); BV.view = { s, tx: w / 2 - wx * s, ty: h / 2 - wy * s }; } else BV.view = null;
+  bvDraw();
+}
+function bvFind(text) {
+  const t = text.trim(); if (!t || !BV.g) return;
+  const lo = t.toLowerCase();
+  const p = BV.g.parts.find(q => q.r.toLowerCase() === lo);
+  if (p) return bvSelect(p.r, null, true);
+  const n = BV.g.nets.findIndex(q => q.toLowerCase() === lo);
+  if (n >= 0) return bvSelect(null, n);
+  const byVal = BV.g.parts.filter(q => !q.f && (q.v || "").toLowerCase() === lo);
+  const like = byVal.length ? byVal : BV.g.parts.filter(q => !q.f && ((q.v || "").toLowerCase().includes(lo) || q.r.toLowerCase().startsWith(lo)));
+  const nets = BV.g.nets.map((q, i) => [q, i]).filter(([q]) => q.toLowerCase().includes(lo));
+  if (like.length === 1 && !nets.length) return bvSelect(like[0].r, null, true);
+  if (nets.length === 1 && !like.length) return bvSelect(null, nets[0][1]);
+  BV.sel = { ref: null, net: null, list: { text: t, parts: like.slice(0, 200).map(q => q.r), nets: nets.slice(0, 100) } };
+  bvInfo(); bvDraw();
+}
+const bvRefLink = r => `<a class="ref" data-bvref="${esc(r)}">${esc(r)}</a>`;
+function bvInfo() {
+  if (tab !== "map" || !BV.g) return;
+  const el = $("#bv-info"), sel = BV.sel, g = BV.g;
+  if (sel.list) {
+    const L = sel.list;
+    el.innerHTML = `<p class="dim">“${esc(L.text)}”: ${plural(L.parts.length, "part")}, ${plural(L.nets.length, "net")}.</p>
+      ${L.parts.length ? `<div class="bv-net">${L.parts.map(r => `${bvRefLink(r)} <span class="dim">${esc(BV.parts[r].v || "")}</span>`).join("<br>")}</div>` : ""}
+      ${L.nets.length ? `<h3>NETS</h3><div class="bv-net">${L.nets.map(([n, i]) => `<a data-bvnet="${i}">${esc(n)}</a>`).join(" · ")}</div>` : ""}`;
+    return;
+  }
+  const p = sel.ref && BV.parts[sel.ref];
+  let html = "";
+  if (p) {
+    const st = BV.st[p.r] || { st: "off", why: "" }, ln = p.l ? g.lines[p.l] : null, side = sideOf(p);
+    const kind = st.kind ? KIND_NAMES[st.kind] || st.kind : null;
+    const aligned = S.sides[side] && S.sides[side].aligned;
+    html += `<div class="insp"><div><b style="font-size:16px">${esc(p.r)}</b> ${kind ? esc(kind) : `<span class="dim">${p.f ? "fiducial" : "not in the check"}</span>`}
+        · ${esc(p.v || "")} <span class="dim">${esc(p.k)} · ${side}</span></div>
+      <div class="kv">
+        <b>BOM line</b><span>${ln ? `${esc(ln.value || "")} ${ln.description ? `<span class="dim">${esc(ln.description)}</span>` : ""} · ${plural(ln.qty, "part")}${ln.dnp ? " · DNP" : ""}` : `<span class="dim">not in the BOM</span>`}</span>
+        <b>Check</b><span>${p.f ? `<span class="dim">fiducial, used to line the photo up</span>` : `<span class="bvst-${st.st}">${esc(BV_TEXT[st.st] || st.st)}</span>${st.why && st.why !== BV_TEXT[st.st] ? ` <span class="dim">${esc(st.why)}</span>` : ""}`}</span>
+        ${p.f ? "" : `<b>Learned</b><span>${st.good || 0} good, ${st.bad || 0} bad${st.extra ? " · added by hand" : ""}</span>`}
+      </div>
+      ${p.f ? "" : `<div class="row"><button id="bv-look" ${aligned ? "" : `disabled title="Line up a photo of the ${side} first"`}>LOOK AT A PART</button>
+        ${st.kind ? "" : `<select id="bv-kind" title="What kind of part to check it as">${Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select><button id="bv-add">ADD TO CHECK</button>`}</div>`}</div>`;
+    const rows = BV.pins ? (BV.pins[p.r] || []).map((q, i) => [q, i]).sort((a, b) => natural(a[0][0], b[0][0])) : null;
+    html += `<h3>PINS${rows ? ` (${rows.length})` : ""}</h3>` + (!rows ? `<p class="dim">Reading the pins...</p>`
+      : `<div class="tablewrap bv-pins"><table><thead><tr><th>Pin</th><th>Net</th><th>Parts on it</th></tr></thead><tbody>${rows.map(([q]) => {
+        const n = q[3], cnt = n >= 0 ? new Set((BV.netPins[n] || []).map(([r]) => r)).size : 0;
+        return `<tr class="${n >= 0 && n === sel.net ? "on" : ""}"><td>${esc(q[0])}</td><td class="net">${n >= 0 ? `<a data-bvnet="${n}" data-bvkeep="1">${esc(g.nets[n])}</a>` : `<span class="dim">not connected</span>`}</td><td>${n >= 0 ? cnt : ""}</td></tr>`;
+      }).join("")}</tbody></table></div>`);
+  }
+  if (sel.net != null && BV.netPins) {
+    const pins = BV.netPins[sel.net] || [], by = {};
+    for (const [r, i] of pins) (by[r] = by[r] || []).push(BV.pins[r][i][0]);
+    const refs = Object.keys(by).sort(natural);
+    const nFront = refs.filter(r => BV.parts[r].s === "top").length;
+    html += `<h3>NET ${esc(g.nets[sel.net])}</h3><p class="dim">${plural(pins.length, "pin")} on ${plural(refs.length, "part")}: ${nFront} on the front, ${refs.length - nFront} on the back.
+      Pins on the other side show as yellow rings; FLIP to see them.</p>
+      <div class="tablewrap bv-pins"><table><thead><tr><th>Part</th><th>Side</th><th>Value</th><th>Pins</th></tr></thead><tbody>${refs.map(r => `<tr><td>${bvRefLink(r)}</td><td>${sideOf(BV.parts[r])}</td><td>${esc(BV.parts[r].v || "")}</td><td>${esc(by[r].sort(natural).join(", "))}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  el.innerHTML = html || `<p class="dim">Click a part or pin on the board, or find a ref, value or net above.</p>`;
+}
+$("#bv-info").addEventListener("click", e => {
+  const a = e.target.closest("[data-bvref]"); if (a) return bvSelect(a.dataset.bvref, null, true);
+  const n = e.target.closest("[data-bvnet]");
+  if (n) return bvSelect(n.dataset.bvkeep ? BV.sel.ref : null, +n.dataset.bvnet);
+  const p = BV.sel.ref && BV.parts[BV.sel.ref]; if (!p) return;
+  if (e.target.id === "bv-look") { const side = sideOf(p); goTab(side); lookAt(side, p.r); }
+  if (e.target.id === "bv-add") act(() => post("api/part/extra", { ref: p.r, kind: $("#bv-kind").value }), `${p.r} added to the check. Train it on the ${sideOf(p)} tab, or wait for a new photo.`).then(bvStatus);
+});
+$("#bv-q").addEventListener("change", e => bvFind(e.target.value));
+$("#bv-q").addEventListener("keydown", e => { if (e.key === "Enter") bvFind(e.target.value); });
+$("#bv-flip").addEventListener("click", bvFlip);
+$("#bv-fit").addEventListener("click", () => { BV.view = null; bvDraw(); });
+$("#bv-photo-on").addEventListener("change", e => { BV.photoOn = e.target.checked; keepBv(); bvDraw(); });
+$("#bv-rats").addEventListener("change", e => { BV.rats = e.target.checked; keepBv(); bvDraw(); });
+document.addEventListener("keydown", e => {
+  if (tab !== "map" || !BV.g || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, select, textarea")) return;
+  if (e.key === "f" || e.key === "F") { e.preventDefault(); bvFlip(); }
+  else if (e.key === "0") { BV.view = null; bvDraw(); }
+  else if (e.key === "Escape") bvSelect(null);
+});
+(() => {
+  const box = $("#bv"), cv = $("#bv-canvas"), tip = $("#bv-hover");
+  let drag = null;
+  cv.addEventListener("wheel", e => {
+    if (!BV.view) return;
+    e.preventDefault();
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const k = Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), v = BV.view;
+    const ns = Math.min(Math.max(v.s * k, 5), 40000), f = ns / v.s;
+    v.tx = mx - (mx - v.tx) * f; v.ty = my - (my - v.ty) * f; v.s = ns;
+    bvDraw();
+  }, { passive: false });
+  cv.addEventListener("pointerdown", e => { if (!BV.view) return; drag = { x: e.clientX, y: e.clientY, tx: BV.view.tx, ty: BV.view.ty, moved: false }; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener("pointermove", e => {
+    const r = cv.getBoundingClientRect();
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; box.classList.add("drag"); }
+      if (drag.moved) { BV.view.tx = drag.tx + dx; BV.view.ty = drag.ty + dy; bvDraw(); }
+      tip.hidden = true; return;
+    }
+    if (!BV.g || !BV.view) return;
+    const h = bvHit(e.clientX - r.left, e.clientY - r.top);
+    if (!h) { tip.hidden = true; return; }
+    const p = BV.parts[h.ref], q = h.i != null ? BV.pins[h.ref][h.i] : null;
+    tip.textContent = q ? `${p.r} pin ${q[0]} · ${q[3] >= 0 ? BV.g.nets[q[3]] : "not connected"}` : `${p.r} · ${p.v || p.k}`;
+    tip.hidden = false; tip.style.left = (e.clientX - r.left + 14) + "px"; tip.style.top = (e.clientY - r.top + 12) + "px";
+  });
+  cv.addEventListener("pointerleave", () => { tip.hidden = true; });
+  cv.addEventListener("pointerup", e => {
+    const d = drag; drag = null; box.classList.remove("drag");
+    if (!d || d.moved || !BV.g) return;
+    const r = cv.getBoundingClientRect(), h = bvHit(e.clientX - r.left, e.clientY - r.top);
+    if (!h) return bvSelect(null);
+    if (h.i != null) { const q = BV.pins[h.ref][h.i]; return bvSelect(h.ref, q[3] >= 0 ? q[3] : null); }
+    bvSelect(h.ref);
+  });
+  window.addEventListener("resize", () => bvDraw());
+})();
+function renderViewer() {
+  if (!BV.knob) BV.knob = knob($("#knob-bvop"), BV.photoOp, v => { BV.photoOp = v; keepBv(); bvDraw(); });
+  $("#bv-photo-on").checked = BV.photoOn; $("#bv-rats").checked = BV.rats;
+  if (!S.project) return;
+  if (BV.uid !== S.project.uid || !BV.g) bvOpen(); else { bvStatus(); }
+}
 
 // ---- history -------------------------------------------------------------------------------
 const H = { q: "", sel: null, list: [], timer: null, kind: "projects", all: false };

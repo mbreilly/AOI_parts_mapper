@@ -82,6 +82,20 @@ def pins_of(ref, x, y, rot, pkg):
     return out
 
 
+# Nets: every pin 1 on VCC, pins 2 and 5 on GND, fiducials on none; U1 pin 2 joins UB1 pin 2 through
+# the board on SDA, and the other ICs' pin 2 are not connected. The top side's pins carry their net in
+# the components file; the bottom's leave it out, so it comes from the SNT records in eda/data.
+NETS = ["VCC", "GND", "SDA", "$NONE$"]
+
+
+def net_of(ref, pin, pkg):
+    if pkg.startswith("FID"):
+        return "$NONE$"
+    if pin == "2" and pkg in ("QFN32", "SOIC8_OFF"):
+        return "SDA" if ref in ("U1", "UB1") else "$NONE$"
+    return "VCC" if pin == "1" else "GND"
+
+
 def make_odb(folder: Path) -> Path:
     """Writes job_odb.tgz into folder and returns its path."""
     pkg_names = list(PKGS)
@@ -89,9 +103,18 @@ def make_odb(folder: Path) -> Path:
     files["job/steps/pcb/stephdr"] = "UNITS=INCH\nX_DATUM=0\nY_DATUM=0\n"
     files["job/steps/panel/stephdr"] = "UNITS=INCH\n"
     eda = ["HDR test", "UNITS=INCH"]
+    snt = {n: [] for n in NETS}
+    for i, (ref, s, x, y, rot, pkg, _) in enumerate(p for p in PARTS if p[1] == "bot"):
+        for j, pn in enumerate(pins_of(ref, x, y, rot, pkg)):
+            snt[net_of(ref, pn, pkg)].append(f"SNT TOP B {i} {j}")
+    for n in NETS:
+        eda += [f"NET {n};;ID=1", *snt[n]]
     for n in pkg_names:
         b = PKGS[n]
         eda.append(f"PKG {n} 0.05 {b[0]} {b[1]} {b[2]} {b[3]};")
+        for pn, (u, v) in pins_of("", 0, 0, 0, n).items():
+            eda.append(f"PIN {pn} S {u} {v} 0 U U")
+            eda.append(f"CR {u} {v} 0.02" if n.startswith("FID") else f"RC {u - 0.01} {v - 0.005} 0.02 0.01")
     files["job/steps/pcb/eda/data"] = "\n".join(eda) + "\n"
     for side in ("top", "bot"):
         lines = ["UNITS=INCH", "#", "# Component records", "#"]
@@ -99,7 +122,8 @@ def make_odb(folder: Path) -> Path:
             lines.append(f"# CMP {i}")
             lines.append(f"CMP {pkg_names.index(pkg)} {x} {y} {rot} N {ref} PN_{ref} ;0=1")
             for j, (pn, (px, py)) in enumerate(pins_of(ref, x, y, rot, pkg).items()):
-                lines.append(f"TOP {j} {px:.6f} {py:.6f} {rot} N 1 1 {pn}")
+                net = f" {NETS.index(net_of(ref, pn, pkg))} 0" if side == "top" else ""
+                lines.append(f"TOP {j} {px:.6f} {py:.6f} {rot} N{net} {pn}")
         files[f"job/steps/pcb/layers/comp_+_{side}/components"] = "\n".join(lines) + "\n"
     files["job/steps/pcb/profile"] = (f"UNITS=INCH\nS P 0\nOB 0 0 I\nOS {W_IN} 0\nOS {W_IN} {H_IN}\nOS 0 {H_IN}\nOS 0 0\nOE\nSE\n")
     out = Path(folder) / "job_odb.tgz"

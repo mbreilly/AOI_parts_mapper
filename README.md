@@ -103,8 +103,25 @@ it had open. Loading or opening a board of a design that is in another project c
      1. Take a closeup of each area.
      2. Click the 2 to 4 points listed: fiducials, or the centres of named parts.
      3. Those parts then count as checkable "on closeup n".
-4. **Map.** Shows the totals and every part that still can't be checked, and why. Download the
-   CSV here.
+4. **Map.** A board viewer (in the style of a repair board viewer such as OpenBoardView), the totals,
+   every part that still can't be checked and why, and the CSV.
+   - Every part of the design is drawn on the lined-up photo of the side (the **Photo** knob sets how
+     strong the photo is; untick **Photo**, or a side with no lined-up photo, shows a plain dark drawing
+     of the outlines and pads). Outlines are coloured by the check: green checked or answered GOOD, red
+     BAD, grey dashed NS (not stuffed), amber in the check but not on a photo, dim grey not in the check.
+   - **Find** any ref, value or net name (the box suggests them). Choosing a part outlines it and its
+     pins and lists each pin with its net; clicking a pin or a net lights every pin on that net across
+     the board and lists the parts on it. **Net lines** joins them up. Pins on the other side show as
+     yellow rings.
+   - Click a part for its kind, value, BOM line and check status, with **Look at a part** (opens it on
+     its side's tab) and **Add to check**.
+   - Mouse wheel zooms, dragging moves, **Fit** (or 0) shows the whole board, **Flip** (or F) shows the
+     other side, mirrored as the board lies when turned over. Pin names (and nets on big pads) show when
+     zoomed in.
+   - Nets and pins come from the ODB++ (`eda/data` NET and package PIN records, and each pin's net in
+     `layers/comp_+_top|bot/components`, or the `SNT` records when the file leaves it out). They are
+     read once per design and kept in `boards/<design>/nets.json`; the photos turned into the viewer's
+     frame are kept in `cache/viewer/`. An ODB++ with no NET records shows parts and pads but no nets.
 
 Every choice made in the Parts tab is kept in a **board profile**, along with the column mapping,
 the orientation of each side, the camera, the size limit and the rotation direction. The profile

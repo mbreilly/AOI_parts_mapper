@@ -101,8 +101,18 @@ try:
         pg.wait_for_timeout(600)
         assert pg.input_value("#look-ref") == "R1"
         pg.screenshot(path=str(out / "6c-look-R1.png"))
-        pg.click("button[data-tab=map]"); pg.wait_for_timeout(300)
+        pg.click("button[data-tab=map]"); pg.wait_for_timeout(1500)
         pg.screenshot(path=str(out / "7-map.png"))
+        # the board viewer: find a net, click a part's pin, flip to the back
+        pg.fill("#bv-q", "SDA"); pg.press("#bv-q", "Enter"); pg.wait_for_selector("#bv-info h3")
+        assert "2 pins on 2 parts" in pg.inner_text("#bv-info"), pg.inner_text("#bv-info")
+        pg.fill("#bv-q", "U1"); pg.press("#bv-q", "Enter"); pg.wait_for_timeout(500)
+        assert "PINS (3)" in pg.inner_text("#bv-info") and "SDA" in pg.inner_text("#bv-info")
+        pg.click("#bv-info [data-bvnet]"); pg.wait_for_timeout(300)
+        pg.screenshot(path=str(out / "7b-viewer-net.png"))
+        pg.click("#tab-map h2"); pg.keyboard.press("f"); pg.wait_for_timeout(300)
+        assert pg.inner_text("#bv-side") == "BACK"
+        pg.screenshot(path=str(out / "7c-viewer-back.png"))
         # this board's serial, then the history
         pg.click("button[data-tab=files]")
         pg.fill("#proj-serial", "PTC-0042"); pg.press("#proj-serial", "Tab"); pg.wait_for_timeout(400)

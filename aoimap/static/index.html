@@ -208,7 +208,27 @@
   <!-- 5 MAP -->
   <section id="tab-map" class="tab" hidden>
     <div class="cols">
-      <div class="col wide">
+      <div class="col viewcol">
+        <div class="row bv-bar">
+          <input id="bv-q" list="dl-bv" placeholder="Find a ref, value or net" autocomplete="off">
+          <button id="bv-flip" title="Show the other side of the board (key F)">FLIP (F)</button>
+          <span class="bv-side" id="bv-side">FRONT</span>
+          <button id="bv-fit" title="Show the whole board (key 0)">FIT</button>
+          <label class="check" title="Draw the parts on the lined-up photo of this side"><input type="checkbox" id="bv-photo-on" checked> Photo</label>
+          <div class="knob small" id="knob-bvop" data-min="0" data-max="100" data-step="5" data-unit="%" data-label="PHOTO"></div>
+          <label class="check" title="Lines joining the pins of the chosen net"><input type="checkbox" id="bv-rats"> Net lines</label>
+        </div>
+        <div class="bv" id="bv"><canvas id="bv-canvas"></canvas><div class="bv-hover" id="bv-hover" hidden></div></div>
+        <div class="bv-legend dim">
+          <span><i class="lg good"></i>checked / GOOD</span><span><i class="lg bad"></i>BAD</span><span><i class="lg ns"></i>NS (not stuffed)</span>
+          <span><i class="lg skip"></i>in the check, not on a photo</span><span><i class="lg off"></i>not in the check</span>
+          <span class="grow"></span><span>Wheel: zoom · drag: move · click a part or pin · F: flip · 0: fit · Esc: clear</span>
+        </div>
+        <p class="dim" id="bv-notes"></p>
+      </div>
+      <div class="col sidecol">
+        <h2>BOARD VIEW</h2>
+        <div id="bv-info"><p class="dim">Click a part or pin on the board, or find a ref, value or net above.</p></div>
         <h2>THE PARTS MAP</h2>
         <div id="map-summary"></div>
         <div class="row">
@@ -308,6 +328,7 @@
   <i class="screw bl"></i><i class="screw br"></i>
 </div>
 <datalist id="dl-parts"></datalist>
+<datalist id="dl-bv"></datalist>
 <script src="static/app.js?v=teach1"></script>
 </body>
 </html>

@@ -24,6 +24,7 @@ from . import groups as gr
 from . import photo as ph
 from . import projects as pj
 from . import teach as tl
+from . import viewer as vw
 from .board import Board
 from .bom import BomError
 from .odb import OdbError
@@ -256,6 +257,8 @@ def make_handler(app: App):
                         self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
                         return self.wfile.write(data)
+                    if parts[1:2] == ["viewer"] and b.design:
+                        return self._viewer_get(parts[2:], q)
                     if parts[1:] == ["design.json"] and b.dir:
                         return self._send(200, (b.dir / "design.json").read_bytes(), "application/json")
                 return self._err("Not found", 404)
@@ -292,6 +295,20 @@ def make_handler(app: App):
                     while chunk := fh.read(1 << 20):
                         self.wfile.write(chunk)
                 return None
+            return self._err("Not found", 404)
+
+        def _viewer_get(self, r, q):
+            """The board viewer on the Map tab (viewer.py). The page asks with ?v=<uid> so geometry and
+            pins may be kept by the browser; the photo's URL carries its stamp."""
+            b = app.board
+            if r == ["geometry"]:
+                return self._json(vw.geometry(b))
+            if r == ["pins"]:
+                return self._send(200, json.dumps(vw.pins(b), separators=(",", ":")).encode(), "application/json")
+            if r == ["status"]:
+                return self._json(vw.status(b))
+            if len(r) == 2 and r[0] == "photo" and r[1] in ("front.jpg", "back.jpg"):
+                return self._send(200, vw.photo(b, r[1][:-4]), "image/jpeg", cache="v" in q)
             return self._err("Not found", 404)
 
         def _part_get(self, r, q):
