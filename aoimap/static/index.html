@@ -14,6 +14,18 @@
     <i class="screw tl"></i><i class="screw tr"></i>
   </header>
 
+  <div class="projbar" id="projbar">
+    <span class="lab">PROJECT</span>
+    <select id="pg-select" title="Choose the project to work in: the tabs below show only its boards, checks and history"></select>
+    <span class="dim grow" id="pg-info"></span>
+    <button id="pg-new">NEW PROJECT</button>
+    <button id="pg-rename">RENAME</button>
+    <div class="row" id="pg-form" hidden>
+      <input id="pg-name" maxlength="80" placeholder="Project name, e.g. PTC">
+      <button id="pg-ok" class="accent">CREATE</button><button id="pg-cancel">CANCEL</button>
+    </div>
+  </div>
+
   <nav class="tabs" id="tabs">
     <button data-tab="files" class="on">1  FILES</button>
     <button data-tab="parts">2  PARTS</button>
@@ -48,7 +60,7 @@
           <div class="row"><button id="proj-new">NEW BOARD, SAME DESIGN</button><span class="dim" id="proj-uid"></span></div>
         </div>
         <div id="boards-box">
-          <h3>RECENT PROJECTS</h3>
+          <h3 id="boards-title">BOARDS IN THIS PROJECT</h3>
           <div id="boards" class="list"></div>
           <div class="row"><button data-goto="history">ALL HISTORY</button></div>
         </div>
@@ -282,7 +294,8 @@
     <div class="cols">
       <div class="col">
         <div class="row"><div class="seg" id="hist-kind"><button data-k="projects" class="on">MAPPED BOARDS</button><button data-k="checks">CHECKS</button><button data-k="learned">LEARNED</button></div></div>
-        <div class="row"><input id="hist-search" placeholder="Board, serial, notes or file name (* matches any part)"></div>
+        <div class="row"><input id="hist-search" placeholder="Board, serial, notes or file name (* matches any part)">
+          <label class="check" title="Show every project's boards, checks and learned examples, not only this project's"><input type="checkbox" id="hist-all"> All projects</label></div>
         <p class="dim" id="hist-status"></p>
         <div class="tablewrap"><table id="hist-list"><thead><tr>
           <th id="hist-c1">Updated</th><th id="hist-c2">Board</th><th id="hist-c3">Serial</th><th id="hist-c4">Front</th><th id="hist-c5">Back</th></tr></thead><tbody></tbody></table></div>

@@ -24,6 +24,7 @@ import traceback
 from pathlib import Path
 
 from . import check as ck
+from . import groups as gr
 from . import projects as pj
 
 try:
@@ -32,7 +33,7 @@ except ImportError:   # the app still runs, without the database
     pymysql = None
 
 DEFAULT_CONFIG = Path.home() / ".config" / "aoimap" / "db.cnf"
-SCHEMA_VERSION = 2      # 2: learned examples, board choices and parts added by hand
+SCHEMA_VERSION = 3      # 2: learned examples, board choices and parts added by hand; 3: projects above the tabs
 
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS aoi_schema (version INT NOT NULL) ENGINE=InnoDB""",
@@ -162,6 +163,22 @@ SCHEMA = [
         ref VARCHAR(64) NOT NULL,
         PRIMARY KEY (board, side, reference_uid, ref)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    # the projects chosen above the tabs (groups.py), and the board designs each is made from
+    """CREATE TABLE IF NOT EXISTS aoi_groups (
+        id VARCHAR(80) NOT NULL PRIMARY KEY,
+        name VARCHAR(80) NOT NULL,
+        notes TEXT,
+        is_current TINYINT(1) NOT NULL DEFAULT 0,
+        open_uid VARCHAR(80) NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS aoi_group_boards (
+        group_id VARCHAR(80) NOT NULL,
+        board VARCHAR(128) NOT NULL,
+        PRIMARY KEY (group_id, board),
+        UNIQUE KEY board (board)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
 ]
 
 LIST_COLS = ("uid, board, serial, notes, station, odb_file, bom_file, units, parts, closeups, "
@@ -177,6 +194,16 @@ def _row(r: dict) -> dict:
         out[side] = {"parts": r[f"{side}_parts"], "photo": bool(r[f"{side}_photo"]), "aligned": bool(r[f"{side}_aligned"]),
                      "checkable": r[f"{side}_checkable"]}
     return out
+
+
+def _in_boards(boards) -> tuple[str, tuple]:
+    """A WHERE clause keeping only these board designs (all of them when boards is None)."""
+    if boards is None:
+        return "1=1", ()
+    boards = tuple(boards)
+    if not boards:
+        return "1=0", ()
+    return f"board IN ({', '.join(['%s'] * len(boards))})", boards
 
 
 def like(pattern: str) -> str:
@@ -286,6 +313,9 @@ class History:
     def changed_learned(self, board: str, side: str):
         self.changed(f"learned:{side}:{board}")
 
+    def changed_groups(self):
+        self.changed("groups:")
+
     def catch_up(self):
         """Writes every project and check folder the database doesn't have, or has an older copy of."""
         for table, ids, load, key in (("aoi_projects", pj.uids, pj.load, ""), ("aoi_checks", ck.uids, ck.load, "check:")):
@@ -306,6 +336,32 @@ class History:
         for f in sorted((self.data / "learned").glob("*/*/examples.json")):
             board = (pj._read_json(f, {}) or {}).get("board") or f.parent.parent.name
             self.write_learned(board, f.parent.name)
+        self.write_groups()
+
+    def write_groups(self):
+        """The whole project list (it is short): the database copy is made the same as groups.json."""
+        if not gr.path(self.data).is_file():
+            return False
+        d = gr.load(self.data)
+
+        def go(c):
+            c.execute("DELETE FROM aoi_group_boards")
+            c.execute("SELECT id FROM aoi_groups")
+            gone = {r["id"] for r in c.fetchall()} - {g["id"] for g in d["projects"]}
+            for gid in gone:
+                c.execute("DELETE FROM aoi_groups WHERE id=%s", (gid,))
+            for g in d["projects"]:
+                c.execute("""INSERT INTO aoi_groups (id, name, notes, is_current, open_uid, created_at, updated_at)
+                             VALUES (%s, %s, %s, %s, %s, %s, %s)
+                             ON DUPLICATE KEY UPDATE name=VALUES(name), notes=VALUES(notes), is_current=VALUES(is_current),
+                               open_uid=VALUES(open_uid), created_at=VALUES(created_at), updated_at=VALUES(updated_at)""",
+                          (g["id"], g["name"], g.get("notes", ""), g["id"] == d["current"], d["open"].get(g["id"]) or "",
+                           g["created"], g["updated"]))
+                if g["boards"]:
+                    c.executemany("INSERT INTO aoi_group_boards (group_id, board) VALUES (%s, %s)",
+                                  [(g["id"], b) for b in g["boards"]])
+            return True
+        return self._run(go)
 
     def write_profile(self, board: str):
         prof = pj._read_json(self.data / "boards" / pj.slug(board) / "profile.json")
@@ -395,8 +451,10 @@ class History:
             return True
         return self._run(go)
 
-    def search_checks(self, q: str = "", limit: int = 50) -> dict:
+    def search_checks(self, q: str = "", limit: int = 50, boards=None) -> dict:
+        """The newest checks, or those matching q; only of these board designs when boards is given."""
         limit = max(1, min(500, int(limit)))
+        inb, inargs = _in_boards(boards)
         if self.ok:
             self.flush()
         cols = ("uid, board, reference_uid, serial, notes, station, result, front_checked, front_flagged, back_checked, "
@@ -406,13 +464,13 @@ class History:
         def go(c):
             if q.strip():
                 pat = like(q)
-                c.execute(f"""SELECT {cols} FROM aoi_checks WHERE board LIKE %s OR serial LIKE %s OR notes LIKE %s
-                              OR result LIKE %s OR uid LIKE %s OR wrong_parts LIKE %s ORDER BY updated_at DESC LIMIT %s""",
-                          (pat,) * 6 + (limit,))
+                c.execute(f"""SELECT {cols} FROM aoi_checks WHERE {inb} AND (board LIKE %s OR serial LIKE %s OR notes LIKE %s
+                              OR result LIKE %s OR uid LIKE %s OR wrong_parts LIKE %s) ORDER BY updated_at DESC LIMIT %s""",
+                          inargs + (pat,) * 6 + (limit,))
             else:
-                c.execute(f"SELECT {cols} FROM aoi_checks ORDER BY updated_at DESC LIMIT %s", (limit,))
+                c.execute(f"SELECT {cols} FROM aoi_checks WHERE {inb} ORDER BY updated_at DESC LIMIT %s", inargs + (limit,))
             rows = c.fetchall()
-            c.execute("SELECT COUNT(*) AS n FROM aoi_checks")
+            c.execute(f"SELECT COUNT(*) AS n FROM aoi_checks WHERE {inb}", inargs)
             return rows, c.fetchone()["n"]
         got = self._run(go)
         if got is not None:
@@ -431,24 +489,29 @@ class History:
         pat = q.strip().lower()
         if pat and "*" not in pat and "?" not in pat:
             pat = f"*{pat}*"
-        rows = []
+        rows, total = [], 0
         for uid in ck.uids(self.data):
             try:
                 c = ck.load(self.data, uid)
             except ValueError:
                 continue
+            if boards is not None and c.get("board") not in boards:
+                continue
+            total += 1
             hay = [c.get(k) or "" for k in ("board", "serial", "notes", "result", "uid")]
             if pat and not any(fnmatch.fnmatch(h.lower(), pat) for h in hay):
                 continue
             rows.append(ck.row(c))
         rows.sort(key=lambda r: r["updated"], reverse=True)
-        return {"source": "folders", "status": self.status, "ok": False, "checks": rows[:limit], "total": len(ck.uids(self.data))}
+        return {"source": "folders", "status": self.status, "ok": False, "checks": rows[:limit], "total": total}
 
     def write(self, uid: str):
         if uid.startswith("check:"):
             return self.write_check(uid[6:])
         if uid.startswith("profile:"):
             return self.write_profile(uid[8:])
+        if uid.startswith("groups:"):
+            return self.write_groups()
         if uid.startswith("learned:"):
             side, board = uid[8:].split(":", 1)
             return self.write_learned(board, side)
@@ -497,22 +560,24 @@ class History:
         return self._run(go)
 
     # ---- reading --------------------------------------------------------------------------------
-    def search(self, q: str = "", limit: int = 50) -> dict:
-        """The newest projects, or those whose board, serial, notes or file names match q."""
+    def search(self, q: str = "", limit: int = 50, boards=None) -> dict:
+        """The newest projects, or those whose board, serial, notes or file names match q; only of these
+        board designs when boards is given."""
         limit = max(1, min(500, int(limit)))
+        inb, inargs = _in_boards(boards)
         if self.ok:
             self.flush()
 
         def go(c):
             if q.strip():
                 pat = like(q)
-                c.execute(f"""SELECT {LIST_COLS} FROM aoi_projects
-                              WHERE board LIKE %s OR serial LIKE %s OR notes LIKE %s OR odb_file LIKE %s OR bom_file LIKE %s OR uid LIKE %s
-                              ORDER BY updated_at DESC LIMIT %s""", (pat,) * 6 + (limit,))
+                c.execute(f"""SELECT {LIST_COLS} FROM aoi_projects WHERE {inb} AND (board LIKE %s OR serial LIKE %s OR notes LIKE %s
+                              OR odb_file LIKE %s OR bom_file LIKE %s OR uid LIKE %s)
+                              ORDER BY updated_at DESC LIMIT %s""", inargs + (pat,) * 6 + (limit,))
             else:
-                c.execute(f"SELECT {LIST_COLS} FROM aoi_projects ORDER BY updated_at DESC LIMIT %s", (limit,))
+                c.execute(f"SELECT {LIST_COLS} FROM aoi_projects WHERE {inb} ORDER BY updated_at DESC LIMIT %s", inargs + (limit,))
             rows = [_row(r) for r in c.fetchall()]
-            c.execute("SELECT COUNT(*) AS n FROM aoi_projects")
+            c.execute(f"SELECT COUNT(*) AS n FROM aoi_projects WHERE {inb}", inargs)
             return rows, c.fetchone()["n"]
         got = self._run(go)
         if got is not None:
@@ -523,11 +588,11 @@ class History:
                 except ValueError:
                     r["missing"] = True
             return {"source": "database", "status": self.status, "ok": True, "projects": rows, "total": total}
-        return {"source": "folders", "status": self.status, "ok": False, **self._search_folders(q, limit)}
+        return {"source": "folders", "status": self.status, "ok": False, **self._search_folders(q, limit, boards)}
 
-    def _search_folders(self, q: str, limit: int) -> dict:
+    def _search_folders(self, q: str, limit: int, boards=None) -> dict:
         import fnmatch
-        rows = []
+        rows, total = [], 0
         pat = q.strip().lower()
         if pat and "*" not in pat and "?" not in pat:
             pat = f"*{pat}*"
@@ -536,11 +601,13 @@ class History:
                 p = pj.load(self.data, uid)
             except ValueError:
                 continue
+            if boards is not None and p.get("board") not in boards:
+                continue
+            total += 1
             hay = [p.get(k) or "" for k in ("board", "serial", "notes", "odb_file", "bom_file", "uid")]
             if pat and not any(fnmatch.fnmatch(h.lower(), pat) for h in hay):
                 continue
             rows.append(p)
-        total = len(pj.uids(self.data))
         rows.sort(key=lambda p: p.get("updated", ""), reverse=True)
         return {"projects": [pj.row(self.data, p) for p in rows[:limit]], "total": total}
 

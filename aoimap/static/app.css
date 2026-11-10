@@ -35,7 +35,16 @@ button:hover, .btn:hover { background: color-mix(in srgb, var(--buttonOff) 75%, 
 button:active, .btn:active { border-color: var(--ink); }
 button.on, button.accent, .btn.accent { background: var(--accent); color: var(--panelEdge); }
 button:disabled { opacity: .45; cursor: default; }
-.tabs { display: flex; gap: 6px; padding: 18px 24px 0; flex-wrap: wrap; }
+/* the project chosen above the tabs */
+.projbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 14px 24px 0; padding: 8px 12px;
+  border: 1px solid var(--panelEdge); border-left: 3px solid var(--accent); border-radius: 3px;
+  background: color-mix(in srgb, var(--panelEdge) 35%, transparent); }
+.projbar select { min-width: 200px; height: 36px; font-weight: 700; font-size: 15px; }
+.projbar .dim { margin: 0; }
+.projbar .grow { flex: 1; min-width: 160px; }
+.projbar .row { margin: 0; flex-basis: 100%; }
+.projbar #pg-name { min-width: 240px; }
+.tabs { display: flex; gap: 6px; padding: 12px 24px 0; flex-wrap: wrap; }
 .tabs button { min-width: 108px; justify-content: center; }
 .seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
 .seg button { min-width: 76px; justify-content: center; }

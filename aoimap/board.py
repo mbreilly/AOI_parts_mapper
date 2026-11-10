@@ -72,6 +72,7 @@ class Board:
         self.on_change = None       # called with a project's uid whenever it changes
         self.on_profile = None      # called with a board name whenever its saved choices change
         self._quiet = False         # set while reopening, which changes nothing
+        self.group_info = None      # gives the project (groups.py) chosen above the tabs, for the page
         self._import_old_boards()
 
     # ---- folders, profiles and projects ------------------------------------------------------
@@ -121,6 +122,14 @@ class Board:
                 self._load_side(side)
         finally:
             self._quiet = False
+
+    def close(self):
+        """Nothing open, as when the app starts: the next ODB++ and BOM loaded start a new board."""
+        self.odb_path = self.bom_path = None
+        self.odb, self.steps, self.bom, self.design, self.name = None, [], None, None, None
+        self._odb_filename = self._bom_filename = None
+        self.profile = json.loads(json.dumps(DEFAULT_PROFILE))
+        self.messages, self.sides, self.project = [], {}, None
 
     def new_from(self, uid: str):
         """Starts a new project for another board of the same design as a past one."""
@@ -742,7 +751,7 @@ class Board:
                                                         "chosen_kind", "hidden", "on_board")},
                               "dnp": bool(ln.get("dnp")), "status": status.get(ln.get("key"), [])})
         return {
-            "name": self.name, "messages": self.messages,
+            "name": self.name, "messages": self.messages, "group": self.group_info() if self.group_info else None,
             "files": {"odb": bool(self.odb_path), "bom": bool(self.bom_path)},
             "steps": [{k: s[k] for k in ("name", "sides", "has_components", "panel")} for s in self.steps],
             "bom_header": self.bom["header"] if self.bom else [],

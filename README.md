@@ -44,6 +44,14 @@ Options:
 
 ## Using it
 
+**Choose the project first.** The bar above the tabs shows the project you are working in (PTC,
+say: a product and its board design) with a list to switch to another, and **NEW PROJECT** to start
+one: give it a name, then load its ODB++ and BOM on Files. The tabs then work inside that project
+only: Files lists its boards, Check a board offers its references, History shows its boards, checks
+and learned examples (tick **All projects** to see every project), and the Parts tab's choices and
+the learned examples are its design's. The app remembers the project chosen last and opens the board
+it had open. Loading or opening a board of a design that is in another project chooses that project.
+
 1. **Files.** Drop in the ODB++ (`.tgz`, `.tar` or `.zip`) and the BOM (`.csv`, or `.xlsx` with
    openpyxl installed).
    - The tool reads the units from the ODB++, picks the board step (not the panel), and guesses
@@ -197,6 +205,12 @@ The app makes its tables itself:
 Photos and files stay in the project folders; the database records where they are.
 
 ## What it saves
+
+The projects above the tabs are listed in `<data>/groups.json` (name, the board design(s) each is
+made from, the one chosen last, the board each had open) and copied to the database tables
+`aoi_groups` and `aoi_group_boards`. Everything else is kept by board design name, so a project
+only names its designs and no folder moves. A design found with no project (boards mapped before
+projects existed) gets a project of its own, named after it, which can be renamed.
 
 Each project is kept under `<data>/projects/<date>-<time>-<board>/`, and the choices to reuse for
 the next board of the same design in `<data>/boards/<board>/profile.json`. Boards saved by earlier

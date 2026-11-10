@@ -46,7 +46,67 @@ const upload = (path, blob) => api(path, { method: "POST", body: blob });
 async function act(fn, done) {
   try { const st = await fn(); if (st && st.sides !== undefined) { S = st; S._r = Date.now(); } if (done) say(done); render(); }
   catch (e) { say(e.message, true); }
+  if (S && (S.group ? S.group.id : null) !== G.cur) loadGroups();   // loading a board can choose its project
 }
+
+// ---- the project chosen above the tabs -------------------------------------------------------
+// A project is a product (PTC, say) and its board design. The tabs show only its boards, references,
+// checks and learned examples; the server remembers the one chosen last.
+const G = { list: [], cur: null, form: null };
+const curGroup = () => G.list.find(g => g.id === G.cur) || null;
+const inGroup = board => { const g = curGroup(); return !g || g.boards.includes(board); };
+async function loadGroups() {
+  try { const r = await api("api/groups"); G.list = r.projects; G.cur = r.current; } catch (e) { say(e.message, true); }
+  renderProjBar();
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+function renderProjBar() {
+  const g = curGroup();
+  const opts = (G.cur ? "" : `<option value="">(choose a project)</option>`) +
+    G.list.map(x => `<option value="${esc(x.id)}" ${x.id === G.cur ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+  if (opts !== G.opts) { $("#pg-select").innerHTML = opts; G.opts = opts; }     // left alone while unchanged, so an open list stays open
+  $("#pg-info").textContent = !g ? (G.list.length ? "" : "No project yet: press NEW PROJECT.") : !g.boards.length ? "No board design yet: load its ODB++ and BOM on Files." :
+    `Design ${g.boards.join(", ")}  ·  ${plural(g.mapped, "board")} mapped` +
+    `  ·  ${plural(g.references, "reference")}  ·  ${plural(g.checks, "check")}  ·  ${g.learned} learned`;
+  $("#pg-rename").disabled = !g;
+  $("#pg-form").hidden = !G.form;
+  $("#pg-ok").textContent = G.form === "rename" ? "RENAME" : "CREATE";
+}
+function groupsDone(r, done) {
+  G.list = r.groups.projects; G.cur = r.groups.current; G.form = null;
+  S = r.state; S._r = Date.now(); recentAt = 0;
+  H.sel = null; $("#hist-detail").innerHTML = ""; CK.anchors = null;
+  renderProjBar();
+  if (!S.design && !["files", "history", "check"].includes(tab)) tab = "files";
+  goTab(tab);
+  if (done) say(done);
+}
+$("#pg-select").addEventListener("change", async e => {
+  if (!e.target.value) return;
+  try {
+    const r = await post("api/groups/switch", { id: e.target.value });
+    const g = r.groups.projects.find(x => x.id === r.groups.current);
+    groupsDone(r, `Project ${g.name}` + (r.state.project ? `: ${r.state.project.board}${r.state.project.serial ? " " + r.state.project.serial : ""} is open.` : ". Load its ODB++ and BOM on Files."));
+  } catch (err) { say(err.message, true); renderProjBar(); }
+});
+$("#pg-new").addEventListener("click", () => { G.form = "new"; $("#pg-name").value = ""; renderProjBar(); $("#pg-name").focus(); });
+$("#pg-rename").addEventListener("click", () => { const g = curGroup(); if (!g) return; G.form = "rename"; $("#pg-name").value = g.name; renderProjBar(); $("#pg-name").focus(); });
+$("#pg-cancel").addEventListener("click", () => { G.form = null; renderProjBar(); });
+$("#pg-name").addEventListener("keydown", e => { if (e.key === "Enter") $("#pg-ok").click(); if (e.key === "Escape") $("#pg-cancel").click(); });
+$("#pg-ok").addEventListener("click", async () => {
+  const name = $("#pg-name").value.trim();
+  try {
+    if (G.form === "rename") {
+      const r = await post("api/groups/rename", { id: G.cur, name });
+      G.list = r.groups.projects; G.form = null; S = r.state; S._r = Date.now(); renderProjBar(); render(); say(`Project renamed ${name}.`);
+    } else {
+      stopCamera(); stopCk();
+      groupsDone(await post("api/groups/new", { name }), `Project ${name} made. Now load its ODB++ and BOM.`);
+      goTab("files");
+      say(`Project ${name} made. Now load its ODB++ and BOM below.`);
+    }
+  } catch (e) { say(e.message, true); }
+});
 
 // ---- knobs (hardware-panel style) ---------------------------------------------------------
 function knob(el, value, onChange, fmt = v => v) {
@@ -117,7 +177,9 @@ function render() {
   $("#tab-map").hidden = tab !== "map";
   $("#tab-history").hidden = tab !== "history";
   $("#tab-check").hidden = tab !== "check";
-  if (S && S.design) $("#sub").textContent = `${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}  ·  ${countAll()} polarised parts`;
+  const gname = S && S.group ? S.group.name + "  ·  " : "";
+  $("#sub").textContent = S && S.design ? "" : gname + "ODB++  ·  BOM  ·  photo map";
+  if (S && S.design) $("#sub").textContent = `${gname}${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}  ·  ${countAll()} polarised parts`;
   if (tab === "files") renderFiles();
   if (tab === "parts") renderParts();
   if (tab === "front" || tab === "back") renderSide(tab);
@@ -179,8 +241,9 @@ async function loadRecent() {
   recentAt = Date.now();
   try {
     const h = await api("api/history?limit=6");
+    loadGroups();                                  // the project bar's counts follow the list
     $("#boards").innerHTML = h.projects.length ? h.projects.map(r => `<div class="${r.uid === h.current ? "cur" : ""}"><span class="grow">${esc(r.board)}${r.serial ? ` <span class="ok">${esc(r.serial)}</span>` : ""}<br><span class="dim">${esc(r.updated)} · ${sideBrief(r, "front")} · ${sideBrief(r, "back")}</span></span>${r.uid === h.current ? `<span class="dim">OPEN NOW</span>` : r.missing ? `<span class="dim" title="Only its database record is left">FOLDER GONE</span>` : `<button data-reopen="${esc(r.uid)}">OPEN</button>`}</div>`).join("")
-      : `<div class="dim">None yet. A project is saved as soon as its ODB++ and BOM are in.</div>`;
+      : `<div class="dim">None yet in this project. A board is saved as soon as its ODB++ and BOM are in.</div>`;
   } catch (e) { $("#boards").innerHTML = `<div class="dim">${esc(e.message)}</div>`; }
 }
 const sideBrief = (r, side) => {
@@ -798,7 +861,9 @@ $("#map-ref").addEventListener("click", async () => {
 });
 
 // ---- history -------------------------------------------------------------------------------
-const H = { q: "", sel: null, list: [], timer: null, kind: "projects" };
+const H = { q: "", sel: null, list: [], timer: null, kind: "projects", all: false };
+const histGroup = () => H.all ? "&group=all" : "";
+$("#hist-all").addEventListener("change", e => { H.all = e.target.checked; H.sel = null; $("#hist-detail").innerHTML = ""; loadHistory(); });
 function setHistKind(k, load = true) {
   if (H.kind !== k) { H.kind = k; H.sel = null; $("#hist-detail").innerHTML = ""; }
   $$("#hist-kind button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
@@ -814,14 +879,14 @@ async function loadHistory() {
   if (H.kind === "checks") return loadChecks();
   if (H.kind === "learned") return loadLearned();
   try {
-    const h = await api(`api/history?limit=200&q=${encodeURIComponent(H.q)}`);
+    const h = await api(`api/history?limit=200&q=${encodeURIComponent(H.q)}${histGroup()}`);
     H.list = h.projects;
-    $("#hist-status").textContent = (h.source === "database" ? `${h.total} project(s) in the database.` : h.status) +
+    $("#hist-status").textContent = (h.source === "database" ? `${h.total} board(s) mapped${H.all ? "" : " in this project"}, from the database.` : h.status) +
       (H.q ? ` ${h.projects.length} match.` : "");
     $("#hist-list tbody").innerHTML = h.projects.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
       <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}${r.uid === h.current ? ` <span class="ok">OPEN</span>` : ""}${r.reference ? ` <span class="dim">REFERENCE</span>` : ""}</td><td>${esc(r.serial)}</td>
       <td>${sideCell(r.front)}</td><td>${sideCell(r.back)}</td></tr>`).join("")
-      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No projects yet."}</td></tr>`;
+      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No boards mapped yet."}</td></tr>`;
     if (!H.sel && h.projects.length) showProject(h.projects[0].uid);
     else if (H.sel) showProject(H.sel);
   } catch (e) { say(e.message, true); }
@@ -832,8 +897,8 @@ $("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[d
 
 async function loadChecks() {
   try {
-    const h = await api(`api/history/checks?limit=200&q=${encodeURIComponent(H.q)}`);
-    $("#hist-status").textContent = (h.source === "database" ? `${h.total} check(s) in the database.` : h.status) + (H.q ? ` ${h.checks.length} match.` : "");
+    const h = await api(`api/history/checks?limit=200&q=${encodeURIComponent(H.q)}${histGroup()}`);
+    $("#hist-status").textContent = (h.source === "database" ? `${h.total} check(s)${H.all ? "" : " in this project"}, from the database.` : h.status) + (H.q ? ` ${h.checks.length} match.` : "");
     const flagged = r => { const n = r.front.flagged + r.back.flagged, w = r.front.wrong.length + r.back.wrong.length; return w ? `<span class="st-wrong">${w} wrong</span>` : n ? `${n} looked at` : "none"; };
     $("#hist-list tbody").innerHTML = h.checks.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
       <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}</td><td>${esc(r.serial)}</td>
@@ -890,7 +955,10 @@ async function showCheck(uid) {
 }
 document.addEventListener("click", e => {
   const o = e.target.closest("[data-ckopen]");
-  if (o) { post("api/check/open", { uid: o.dataset.ckopen }).then(st => { CK.st = st; goTab("check"); }).catch(err => say(err.message, true)); }
+  if (o) {    // a check of another project (from All projects) chooses that project
+    post("api/check/open", { uid: o.dataset.ckopen }).then(async st => { CK.st = st; S = await api("api/state"); S._r = Date.now(); recentAt = 0; loadGroups(); goTab("check"); })
+      .catch(err => say(err.message, true));
+  }
   const pr = e.target.closest("[data-showproj]");
   if (pr) { e.preventDefault(); setHistKind("projects", false); H.sel = pr.dataset.showproj; loadHistory(); }
 });
@@ -898,7 +966,7 @@ document.addEventListener("click", e => {
 // what the check has learned, per board design and side
 async function loadLearned() {
   try {
-    const h = await api("api/check/learned"), q = H.q.toLowerCase();
+    const h = await api(`api/check/learned?${histGroup().slice(1)}`), q = H.q.toLowerCase();
     const rows = h.boards.filter(b => !q || b.board.toLowerCase().includes(q));
     $("#hist-status").textContent = "Examples the testers' answers have taught the board check, per board design.";
     $("#hist-list tbody").innerHTML = rows.map(b => `<tr class="click ${b.board === H.sel ? "sel" : ""}" data-uid="${esc(b.board)}">
@@ -1037,7 +1105,7 @@ function renderCheck() {
   const c = st.check;
   $("#ck-start").hidden = !!c; $("#ck-run").hidden = !c;
   if (!c) {
-    const refs = st.references.filter(r => Object.keys(r.sides).length);
+    const refs = st.references.filter(r => Object.keys(r.sides).length && inGroup(r.board));
     $("#ck-ref").innerHTML = refs.map(r => `<option value="${esc(r.uid)}">${esc(r.board)} · reference ${esc(r.serial || r.uid)} (${Object.keys(r.sides).join(" and ")})</option>`).join("");
     $("#ck-noref").hidden = !!refs.length; $("#ck-go").disabled = !refs.length;
   } else {
@@ -1202,5 +1270,6 @@ $("#ck-cam-take").addEventListener("click", async () => {
 $("#ck-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) sendCk(f); });
 
 // ---- start --------------------------------------------------------------------------------
+loadGroups();
 act(() => api("api/state")).then(() => { if (S && S.design) say(""); });
 window.addEventListener("resize", () => (tab === "front" || tab === "back") && drawMarks(tab));

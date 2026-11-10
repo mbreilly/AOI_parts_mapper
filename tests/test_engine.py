@@ -791,6 +791,150 @@ def test_database_history():
     h._run(lambda c: c.execute("DELETE FROM aoi_projects WHERE uid=%s", (first,)))
 
 
+def _api(port, path, body=None):
+    import urllib.request
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/{path}", data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="GET" if body is None else "POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read())
+
+
+def _serve(data):
+    """The app on a free port, without the database (as with --no-db)."""
+    import threading
+    from http.server import ThreadingHTTPServer
+    from aoimap import server
+    app = server.App(data, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(app))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return app, srv, srv.server_address[1]
+
+
+def _tree(d: Path) -> dict:
+    """Every file's content (opening a board writes its map and parts lists again, the same)."""
+    import hashlib
+    return {f.relative_to(d).as_posix(): hashlib.sha1(f.read_bytes()).hexdigest() for f in d.rglob("*") if f.is_file()}
+
+
+def test_boards_mapped_before_projects_become_a_project_unmoved():
+    """Data from before projects existed: its design gets a project of its own (named after it, to be
+    renamed), chosen and opened, and not one file is moved or changed."""
+    from aoimap import groups as gr
+    from aoimap.check import Checks
+    b = reference_board()
+    design, ref_uid = b.name, b.project["uid"]
+    c = Checks(b.data)
+    c.start(ref_uid, "SN-1")
+    c.close()
+    before = _tree(b.data)
+    app, srv, port = _serve(b.data)
+    try:
+        after = _tree(b.data)
+        assert set(after) - set(before) == {"groups.json"}
+        # (map.jpg is drawn again on the photo as saved, a JPEG, where the test drew it on the PNG taken)
+        assert all(after[k] == v for k, v in before.items() if not k.endswith("map.jpg")), \
+            [k for k, v in before.items() if after.get(k) != v]
+        g = _api(port, "api/groups")
+        assert [x["name"] for x in g["projects"]] == [design] and g["current"] == g["projects"][0]["id"]
+        p = g["projects"][0]
+        assert p["boards"] == [design] and p["mapped"] == 1 and p["references"] == 1 and p["checks"] == 1
+        st = _api(port, "api/state")
+        assert st["project"]["uid"] == ref_uid and st["group"]["name"] == design
+        # renamed, it keeps everything: boards, checks, the reference
+        r = _api(port, "api/groups/rename", {"id": p["id"], "name": "PTC"})
+        assert r["groups"]["projects"][0]["name"] == "PTC" and r["state"]["project"]["uid"] == ref_uid
+        assert [x["uid"] for x in _api(port, "api/history")["projects"]] == [ref_uid]
+        assert len(_api(port, "api/history/checks")["checks"]) == 1
+        assert _api(port, "api/history")["total"] == 1
+        # a restart leaves it chosen, with the same board open
+        gr.ensure(b.data)
+        assert gr.load(b.data)["current"] == p["id"] and len(gr.load(b.data)["projects"]) == 1
+    finally:
+        srv.shutdown()
+    app2, srv2, port2 = _serve(b.data)
+    try:
+        assert _api(port2, "api/state")["project"]["uid"] == ref_uid
+        assert _api(port2, "api/state")["group"]["name"] == "PTC"
+    finally:
+        srv2.shutdown()
+
+
+def test_new_project_and_switching_keep_each_projects_boards_apart():
+    import urllib.request
+    from aoimap import groups as gr
+    b = reference_board()
+    first_design, first_uid = b.name, b.project["uid"]
+    app, srv, port = _serve(b.data)
+    try:
+        ptc = _api(port, "api/groups")["current"]
+        _api(port, "api/groups/rename", {"id": ptc, "name": "PTC"})
+        assert "error" in _api(port, "api/groups/new", {"name": "ptc"})          # names are unique
+        assert "error" in _api(port, "api/groups/new", {"name": "  "})
+        r = _api(port, "api/groups/new", {"name": "Motor driver"})
+        other = r["groups"]["current"]
+        assert other != ptc and r["state"]["project"] is None and r["state"]["design"] is None
+        assert r["state"]["group"] == {"id": other, "name": "Motor driver", "boards": []}
+        # the new project shows none of PTC's boards, checks, references or learned examples
+        assert _api(port, "api/history")["projects"] == [] and _api(port, "api/history/checks")["checks"] == []
+        assert _api(port, "api/check/learned")["boards"] == []
+        assert [x["uid"] for x in _api(port, "api/history?group=all")["projects"]] == [first_uid]
+        # its ODB++ and BOM go in with the Files tab's loaders; the design joins the project chosen
+        odb2 = TMP / "motor_odb.tgz"
+        odb2.write_bytes(ODB.read_bytes())
+
+        def up(kind, f):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/upload?kind={kind}&name={f.name}", data=f.read_bytes(), method="POST")
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read())
+        up("odb", odb2)
+        st = up("bom", BOM)
+        assert st["name"] == "motor" and st["group"]["boards"] == ["motor"]
+        motor_uid = st["project"]["uid"]
+        assert [x["uid"] for x in _api(port, "api/history")["projects"]] == [motor_uid]
+        assert gr.of_board(gr.load(b.data), "motor")["name"] == "Motor driver"
+        # back to PTC: its board is opened again, and the lists are PTC's
+        r = _api(port, "api/groups/switch", {"id": ptc})
+        assert r["groups"]["current"] == ptc and r["state"]["project"]["uid"] == first_uid and r["state"]["name"] == first_design
+        assert [x["uid"] for x in _api(port, "api/history")["projects"]] == [first_uid]
+        assert {x["uid"] for x in _api(port, "api/history?group=all")["projects"]} == {first_uid, motor_uid}
+        assert [x["uid"] for x in _api(port, f"api/history?group={other}")["projects"]] == [motor_uid]
+        # and back again: the board that project had open
+        assert _api(port, "api/groups/switch", {"id": other})["state"]["project"]["uid"] == motor_uid
+        # loading PTC's design while in another project chooses PTC (a design is in one project only)
+        _api(port, f"api/history/{first_uid}/open", {})
+        assert gr.load(b.data)["current"] == ptc
+        assert "error" in _api(port, "api/groups/switch", {"id": "nope"})
+        # remembered for the next start
+        assert gr.load(b.data)["open"] == {ptc: first_uid, other: motor_uid}
+    finally:
+        srv.shutdown()
+
+
+def test_check_in_progress_is_put_away_when_another_project_is_chosen():
+    from aoimap import groups as gr
+    b = reference_board()
+    app, srv, port = _serve(b.data)
+    try:
+        ptc = _api(port, "api/groups")["current"]
+        assert _api(port, "api/check/start", {"reference": b.project["uid"], "serial": "X1"})["check"]
+        _api(port, "api/groups/new", {"name": "Other"})
+        assert _api(port, "api/check/state")["check"] is None
+        _api(port, "api/groups/switch", {"id": ptc})
+        assert len(_api(port, "api/history/checks")["checks"]) == 1      # kept, to reopen from History
+        assert gr.counts(b.data, gr.get(gr.load(b.data), ptc))["checks"] == 1
+        # opened from History's All projects while in another project, it chooses its own project
+        other = next(g["id"] for g in _api(port, "api/groups")["projects"] if g["name"] == "Other")
+        _api(port, "api/groups/switch", {"id": other})
+        uid = _api(port, "api/history/checks?group=all")["checks"][0]["uid"]
+        assert _api(port, "api/check/open", {"uid": uid})["check"]["uid"] == uid
+        assert gr.load(b.data)["current"] == ptc and _api(port, "api/state")["project"]["uid"] == b.project["uid"]
+    finally:
+        srv.shutdown()
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

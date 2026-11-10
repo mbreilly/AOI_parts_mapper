@@ -20,6 +20,7 @@ import cv2
 from . import canon as canonlib
 from . import check as ck
 from . import db as dblib
+from . import groups as gr
 from . import photo as ph
 from . import projects as pj
 from . import teach as tl
@@ -56,6 +57,87 @@ class App:
         self.checks = ck.Checks(data_dir)
         self.checks.on_change = self.history.changed_check
         self.lock = threading.Lock()
+        self.data = Path(data_dir)
+        _, changed = gr.ensure(self.data)
+        if changed:
+            self.history.changed_groups()
+        self.board.group_info = self.group_info
+        self.open_last()
+
+    # ---- the project chosen above the tabs (groups.py) ------------------------------------------
+    def group(self) -> dict | None:
+        d = gr.load(self.data)
+        return gr.get(d, d["current"])
+
+    def group_info(self) -> dict | None:
+        g = self.group()
+        return {k: g[k] for k in ("id", "name", "boards")} if g else None
+
+    def boards_for(self, q: dict):
+        """The board designs a list is limited to: group=all for every project, group=<id> for that
+        one, and none given for the project chosen now."""
+        want = q.get("group", "")
+        if want == "all":
+            return None
+        d = gr.load(self.data)
+        g = gr.get(d, want or d["current"])
+        return set(g["boards"]) if g else None
+
+    def open_last(self):
+        """Opens the board the chosen project had open last (or its newest), so the tabs show it."""
+        d = gr.load(self.data)
+        g = gr.get(d, d["current"])
+        if not g:
+            return
+        ms = gr.mapped(self.data, set(g["boards"]))
+        want = d["open"].get(g["id"])
+        for uid in ([want] if want else []) + [p["uid"] for p in ms if p["uid"] != want]:
+            try:
+                self.board.open_project(uid)
+                return
+            except (ValueError, OSError, OdbError, BomError):
+                traceback.print_exc()
+        self.board.close()
+
+    def switch(self, gid: str):
+        """Chooses a project. A board or check open from another project is put away (both are saved)."""
+        gr.set_current(self.data, gid)
+        g = self.group()
+        if self.board.name not in g["boards"] or not self.board.project:
+            self.open_last()
+        c = self.checks.cur
+        if c and c["board"] not in g["boards"]:
+            self.checks.close()
+        self.history.changed_groups()
+
+    def new_group(self, name: str):
+        gr.create(self.data, name)
+        self.board.close()
+        if self.checks.cur:
+            self.checks.close()
+        self.history.changed_groups()
+
+    def adopt(self):
+        """After a board is loaded or opened: its design joins the chosen project if it is in none,
+        or the project it is in is chosen (and the page told)."""
+        b = self.board
+        if not b.name:
+            return
+        d = gr.load(self.data)
+        owner, cur = gr.of_board(d, b.name), gr.get(d, d["current"])
+        if owner and cur and owner["id"] != cur["id"]:
+            gr.set_current(self.data, owner["id"])
+            if self.checks.cur and self.checks.cur["board"] not in owner["boards"]:
+                self.checks.close()
+            b.messages.append(f"{b.name} is in project {owner['name']}, so that project is chosen now.")
+        elif not owner:
+            if cur:
+                gr.add_board(self.data, cur["id"], b.name)
+            else:
+                gr.create(self.data, b.name, [b.name])
+        if b.project:
+            gr.set_open(self.data, self.group()["id"], b.project["uid"])
+        self.history.changed_groups()
 
 
 def make_handler(app: App):
@@ -123,8 +205,10 @@ def make_handler(app: App):
                         return self._send(200, canonlib.shared().preview(), "image/jpeg")
                     except canonlib.CameraError as e:
                         return self._err(str(e), 503)
+                if parts[1:] == ["groups"]:
+                    return self._json(gr.view(app.data))
                 if parts[1:3] == ["history", "checks"]:
-                    return self._json(app.history.search_checks(q.get("q", ""), q.get("limit", 50)))
+                    return self._json(app.history.search_checks(q.get("q", ""), q.get("limit", 50), app.boards_for(q)))
                 if parts[1:2] == ["history"]:
                     return self._history_get(parts[2:], q)
                 if parts[1:2] == ["check"]:
@@ -186,7 +270,7 @@ def make_handler(app: App):
             so it doesn't wait for the board's lock."""
             h = app.history
             if not r:
-                return self._json({**h.search(q.get("q", ""), q.get("limit", 50)),
+                return self._json({**h.search(q.get("q", ""), q.get("limit", 50), app.boards_for(q)),
                                    "current": app.board.project["uid"] if app.board.project else None})
             uid = r[0]
             if len(r) == 1:
@@ -255,7 +339,8 @@ def make_handler(app: App):
             if r == ["state"]:
                 return self._json(c.state())
             if r == ["learned"]:
-                return self._json({"boards": c.learned_boards()})
+                boards = app.boards_for(q)
+                return self._json({"boards": [x for x in c.learned_boards() if boards is None or x["board"] in boards]})
             if len(r) == 3 and r[0] == "learned":
                 return self._json(c.learned(r[1], r[2]))
             if len(r) == 4 and r[0] == "learned":
@@ -283,6 +368,10 @@ def make_handler(app: App):
                 c.start(j["reference"], j.get("serial", ""), j.get("notes", ""))
             elif r == ["open"]:
                 c.open(self._jbody()["uid"])
+                d = gr.load(app.data)
+                owner = gr.of_board(d, c.cur["board"])
+                if owner and owner["id"] != d["current"]:
+                    app.switch(owner["id"])       # a check of another project (from All projects) chooses it
             elif r == ["close"]:
                 c.close()
             elif len(r) == 3 and r[0] == "side" and r[1] in ("front", "back"):
@@ -334,7 +423,20 @@ def make_handler(app: App):
                         if kind not in ("odb", "bom"):
                             return self._err("Upload kind must be odb or bom.")
                         b.add_file(kind, q.get("name", kind), self._body())
+                        app.adopt()
                         return self._json(b.state())
+                    if len(r) == 2 and r[0] == "groups":
+                        j = self._jbody()
+                        if r[1] == "switch":
+                            app.switch(j["id"])
+                        elif r[1] == "new":
+                            app.new_group(j.get("name", ""))
+                        elif r[1] == "rename":
+                            gr.rename(app.data, j["id"], j.get("name", ""))
+                            app.history.changed_groups()
+                        else:
+                            return self._err("Not found", 404)
+                        return self._json({"groups": gr.view(app.data), "state": b.state()})
                     if r[:1] == ["check"]:
                         return self._check_post(r[1:])
                     if r[:1] == ["part"]:
@@ -343,9 +445,11 @@ def make_handler(app: App):
                         uid, what = r[1], r[2]
                         if what == "open":
                             b.open_project(uid)
+                            app.adopt()
                             return self._json(b.state())
                         if what == "new":
                             b.new_from(uid)
+                            app.adopt()
                             return self._json(b.state())
                         if what == "info":
                             j = self._jbody()
