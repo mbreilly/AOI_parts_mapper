@@ -6,3 +6,6 @@ opencv-python>=4.8
 pymysql>=1.1
 # optional: a Canon EOS (or other gphoto2 camera) on USB; needs libgphoto2 (apt install gphoto2 libgphoto2-dev)
 gphoto2>=2.5
+# optional: the models' image network (python -m aoimap.models setup downloads it; onnx is only needed for that)
+# onnxruntime>=1.17
+# onnx>=1.15

@@ -657,6 +657,7 @@ class Checks:
         learned = example_images(self.data, board, side)
         wrong = set(load_examples(self.data, board, side)["reference_wrong"].get(self.cur["reference"], []))
         results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong) for p in parts]
+        self._models(side, aligned, results)
         ns = self._ns(side)
         usual = [r for r in results if r["ref"] not in pending and r["ref"] not in ns]
         if usual and np.median([max(r["score"], r["turned"]) for r in usual]) < 0.45 and not (force and len(usual) < 3):
@@ -675,6 +676,22 @@ class Checks:
         self._touch(f"{side.capitalize()} checked: {len(results)} parts, "
                     + (f"{len(flagged)} flagged ({', '.join(flagged[:12])}{' ...' if len(flagged) > 12 else ''})" if flagged else "none flagged"))
         return True
+
+    def _models(self, side, aligned, results):
+        """The trained models' opinion of each part (models.py), kept beside the check's own answer."""
+        try:
+            from . import models as md
+            from . import teach as tl
+            d = tl.design_for(self.data, self.cur["reference"])
+            m = tl._mapping(self.data, self.cur["reference"], side)
+            for r in results:
+                g = tl.part_geom(d, r["ref"])
+                op = md.opinion(self.data, self.cur["board"], aligned, m, g, d["rot_sign"], r["kind"]) if g else {}
+                if op:
+                    r.update(model=op, model_text=md.summary(op))
+        except Exception:   # noqa: BLE001 - an extra opinion: the check stands without it
+            import traceback
+            traceback.print_exc()
 
     def _ns(self, side) -> dict:
         return not_stuffed(self.data, self.cur["board"], side, ns_key(self.cur.get("serial", ""), self.cur["uid"]))

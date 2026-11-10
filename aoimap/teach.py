@@ -219,7 +219,23 @@ def _placed(data, uid, side, ref):
 
 
 def inspect(data: Path, src: str, ref: str) -> dict:
-    """What the app makes of one part on one photo: correct, wrong, unsure or skipped, and why."""
+    """What the app makes of one part on one photo: correct, wrong, unsure or skipped, and why; and
+    what the trained models make of it (models.py), as an extra opinion."""
+    out = _inspect(data, src, ref)
+    try:
+        from . import models as md
+        s = source(data, src)
+        d, g = _geom(data, s, ref)
+        op = md.opinion(data, s["board"], _image(s["img"]), s["mapping"], g, d["rot_sign"], out.get("kind"))
+        if op:
+            out.update(model=op, model_text=md.summary(op))
+    except Exception:   # noqa: BLE001 - the models are an extra; the check's answer stands without them
+        import traceback
+        traceback.print_exc()
+    return out
+
+
+def _inspect(data: Path, src: str, ref: str) -> dict:
     s = source(data, src)
     d, g = _geom(data, s, ref)
     board, side = s["board"], s["side"]

@@ -159,6 +159,7 @@ function goTab(t) {
   if (tab === "front" || tab === "back") { loadAnchors(tab); $("#look-insp").innerHTML = ""; $("#look-ref").value = ""; ui.highlight = null; }
   if (tab === "history") loadHistory();
   if (tab === "check") loadCheck();
+  if (tab === "models") loadModels();
   if (tab === "map" && S && S.project) bvOpen();
 }
 document.addEventListener("click", e => {
@@ -170,7 +171,7 @@ document.addEventListener("click", e => {
 function render() {
   $$("#tabs button").forEach(b => {
     b.classList.toggle("on", b.dataset.tab === tab);
-    b.disabled = !["files", "history", "check"].includes(b.dataset.tab) && !(S && S.design);
+    b.disabled = !["files", "history", "check", "models"].includes(b.dataset.tab) && !(S && S.design);
   });
   $("#tab-files").hidden = tab !== "files";
   $("#tab-parts").hidden = tab !== "parts";
@@ -178,6 +179,7 @@ function render() {
   $("#tab-map").hidden = tab !== "map";
   $("#tab-history").hidden = tab !== "history";
   $("#tab-check").hidden = tab !== "check";
+  $("#tab-models").hidden = tab !== "models";
   const gname = S && S.group ? S.group.name + "  ·  " : "";
   $("#sub").textContent = S && S.design ? "" : gname + "ODB++  ·  BOM  ·  photo map";
   if (S && S.design) $("#sub").textContent = `${gname}${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}  ·  ${countAll()} polarised parts`;
@@ -802,6 +804,7 @@ async function showPart(el, src, ref, after) {
     <div class="row"><span class="verdict v-${d.verdict}">${VERDICT_TEXT[d.verdict] || d.verdict}</span><span class="dim grow">${esc(d.why)}</span></div>
     <div class="pics"><figure><img src="${partCrop(src, d.ref, "board", v)}" alt="">${esc(d.label)}</figure>
       ${d.reference && !d.verdict.startsWith("ref") ? `<figure><img src="${partCrop(src, d.ref, "reference", v)}" alt="">reference</figure>` : ""}</div>
+    ${modelLine(d)}
     <div class="dim">Learned so far: ${d.good} good, ${d.bad} bad${d.pending ? " · waiting for a new photo to be taught on" : ""}${ans ? ` · this board answered ${ans === "correct" ? "GOOD" : "BAD"}` : ""}</div>
     <div class="row">${d.in_check ? "" : `<select class="t-kind" title="What kind of part to check it as">${Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`}
       <button data-t="good" class="${ans === "correct" ? "on" : ""}">GOOD</button><button data-t="bad" class="wrongbtn ${ans === "wrong" && d.reason !== "missing" ? "on" : ""}">BAD</button>
@@ -836,6 +839,9 @@ async function showPart(el, src, ref, after) {
     } catch (err) { say(err.message, true); }
   };
 }
+
+// the trained models' extra opinion (models.py): shown, never used to pass or fail
+const modelLine = r => r.model_text ? `<div class="dim" title="An extra opinion from the models trained on this machine (MODELS tab). The check's own answer above is what counts.">Models think: ${esc(r.model_text)}</div>` : "";
 
 // ---- 5 map ---------------------------------------------------------------------------------
 function renderMap() {
@@ -1254,6 +1260,51 @@ function renderViewer() {
   if (BV.uid !== S.project.uid || !BV.g) bvOpen(); else { bvStatus(); }
 }
 
+// ---- models: one per job, trained on this machine (models.py) ----------------------------------
+const MD = { timer: null, all: false };
+const pct = v => v == null ? "–" : `${Math.round(v * 100)}%`;
+const AUTO_NOTE = "Accuracy measured mostly on auto-made examples is a rough guide until more of your own answers exist.";
+async function loadModels() {
+  clearTimeout(MD.timer);
+  let r;
+  try { r = await api(`api/models${MD.all ? "?group=all" : ""}`); } catch (e) { say(e.message, true); return; }
+  if (tab !== "models") return;
+  const busy = r.boards.some(b => b.progress && b.progress.state === "running");
+  $("#md-list").innerHTML = r.boards.map(b => {
+    const p = b.progress, run = p && p.state === "running";
+    return `<h2>${esc(b.board)}</h2>
+      <div class="row"><button data-train="${esc(b.board)}" class="accent" ${run ? "disabled" : ""}>RETRAIN ALL THREE</button>
+        <span class="dim grow">${run ? `Training: ${esc(p.step || "")}${p.pct != null ? ` (${p.pct}%)` : ""}. It runs in the background at low priority; you can keep working.`
+          : p && p.state === "failed" ? `<span class="st-wrong">The last training stopped: ${esc(p.error || "")}</span>`
+          : p && p.state === "done" ? `Last trained ${esc(p.finished || "")}.` : "Not trained yet."} Pictures described by: ${esc(b.features)}.</span></div>
+      <div class="tablewrap"><table class="md"><thead><tr><th>Model</th><th>Examples</th><th>Accuracy on parts it wasn't trained on</th><th>Trained</th><th></th></tr></thead><tbody>
+      ${b.jobs.map(j => {
+        const m = j.metrics;
+        const auto = m ? Object.entries(m.auto || {}).map(([k, v]) => `${esc(k)} ${v}`).join(", ") : "";
+        const kinds = m ? Object.entries(m.kinds || {}).map(([k, v]) => `${esc(KIND_NAMES[k] || k)} ${v.pos}${j.job === "orientation" ? "" : "/" + v.neg}`).join(" · ") : "";
+        const bk = m ? Object.entries(m.by_kind || {}).filter(([, v]) => v.total).map(([k, v]) => `${esc(KIND_NAMES[k] || k)} ${pct(v.right / v.total)} of ${v.total}`).join(" · ") : "";
+        return `<tr><td><b>${esc(j.title)}</b><div class="dim">${esc(j.question)} ${esc(j.learns)}</div></td>
+          <td>${!m ? `<span class="dim">–</span>` : `${j.job === "orientation" ? `${m.pos} pictures of ${m.parts} square parts` : `${m.pos} ${esc(j.pos)}, ${m.neg} ${esc(j.neg)}`}
+            <div class="dim">Your own answers: <b>${m.own}</b>${auto ? ` · auto-made: ${auto}` : ""}</div>
+            ${kinds ? `<div class="dim">By kind (${esc(j.pos)}${j.job === "orientation" ? "" : "/" + esc(j.neg)}): ${kinds}</div>` : ""}`}</td>
+          <td>${!m ? "" : m.enough ? `<b>${pct(m.accuracy)}</b> <span class="dim">(guessing would get ${pct(m.baseline)})</span>${bk ? `<div class="dim">${bk}</div>` : ""}${m.rough ? `<div class="st-check">${AUTO_NOTE}</div>` : ""}${m.used ? `<div class="st-ok">Its opinion is shown on checks.</div>` : `<div class="st-check">Not shown on checks until its accuracy is ${pct(b.use_accuracy)} or more.</div>`}`
+            : `<span class="st-check">Too few examples: it needs ${esc(j.need)}.</span>${m.short && m.short.length ? `<div class="dim">Still needed: ${esc(m.short.join("; "))}.</div>` : ""}${m.accuracy != null ? `<div class="dim">So far ${pct(m.accuracy)} (guessing would get ${pct(m.baseline)}); not used until it has enough.</div>` : ""}`}</td>
+          <td>${m ? esc(m.trained) : `<span class="dim">never</span>`}</td>
+          <td><button data-train="${esc(b.board)}" data-job="${j.job}" ${run ? "disabled" : ""}>RETRAIN</button></td></tr>`;
+      }).join("")}</tbody></table></div>`;
+  }).join("") || `<p class="dim">No board design in this project yet. Load its ODB++ and BOM on Files.</p>`;
+  if (busy) MD.timer = setTimeout(loadModels, 2000);
+}
+$("#md-list").addEventListener("click", async e => {
+  const b = e.target.closest("[data-train]"); if (!b) return;
+  try {
+    await post("api/models/train", { board: b.dataset.train, jobs: b.dataset.job ? [b.dataset.job] : null });
+    say("Training started in the background. This page shows how it's going.");
+  } catch (err) { say(err.message, true); }
+  loadModels();
+});
+$("#md-all").addEventListener("change", e => { MD.all = e.target.checked; loadModels(); });
+
 // ---- history -------------------------------------------------------------------------------
 const H = { q: "", sel: null, list: [], timer: null, kind: "projects", all: false };
 const histGroup = () => H.all ? "&group=all" : "";
@@ -1312,7 +1363,7 @@ function flaggedHtml(c, side, editable) {
   const st = c.sides[side] || {}, rs = (st.results || []).filter(r => !FINE(r) || r.missed);
   return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
       <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · ${r.missed ? `<span class="st-wrong">missed by the check</span>` : r.new ? `<span class="st-check">new part, teach me</span>` : `<span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>`}
-        <div class="dim">${esc(r.why || "")}</div></div>
+        <div class="dim">${esc(r.why || "")}</div>${modelLine(r)}</div>
       <div class="pics"><figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "reference")}" alt="">reference</figure>
         <figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "board")}" alt="">this board</figure></div>
       ${editable ? `<div class="row">${r.missed ? "" : `<button data-ans="correct" data-ref="${esc(r.ref)}" class="${r.answer === "correct" ? "on" : ""}">RIGHT WAY ROUND</button>`}

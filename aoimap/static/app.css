@@ -208,3 +208,7 @@ a.ref.thumb:hover img { border-color: var(--accent); }
 .bv-pins tr.on td { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .bvst-good, .bvst-checked { color: #6FCF73; font-weight: 700; } .bvst-bad { color: #FF6B5B; font-weight: 700; }
 .bvst-ns { color: #9A9A9A; font-weight: 700; } .bvst-skipped, .bvst-nophoto { color: var(--accent); font-weight: 700; } .bvst-off { color: var(--dimInk); }
+
+/* models tab */
+table.md td { vertical-align: top; }
+table.md td .dim { margin: 2px 0; }

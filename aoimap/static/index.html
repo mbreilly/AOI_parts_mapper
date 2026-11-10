@@ -34,6 +34,7 @@
     <button data-tab="map">5  MAP</button>
     <button data-tab="check">CHECK A BOARD</button>
     <button data-tab="history">HISTORY</button>
+    <button data-tab="models">MODELS</button>
   </nav>
 
   <div id="msg" class="msg" hidden></div>
@@ -244,6 +245,25 @@
       </div>
     </div>
   </section>
+  <!-- MODELS -->
+  <section id="tab-models" class="tab" hidden>
+    <div class="cols">
+      <div class="col wide">
+        <h2>MODELS</h2>
+        <p class="dim">Three small models, one for each job of the check, trained on this machine from your answers (GOOD, BAD,
+          MISSING, NS) and from the reference board. They give an extra opinion with a confidence (on Check a board and Look at
+          a part, as "Models think"); the check's own answer is still what counts. Retrain after teaching more parts.</p>
+        <p class="dim"><b>Accuracy</b> is tested on parts each model wasn't trained on: the examples of each part are kept out in
+          turn (5 rounds) and it's the share it got right. "Guessing" is what always giving the most common answer would get.
+          Auto-made examples (the reference board's parts, turned copies of right ones, bare DNP pads) fill in until there are
+          enough of your own answers. Accuracy measured mostly on auto-made examples is a rough guide until more real answers
+          exist. A model's opinion is shown only once it has enough examples and 75% accuracy or more.</p>
+        <label class="check"><input type="checkbox" id="md-all"> All projects</label>
+        <div id="md-list"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- CHECK A BOARD -->
   <section id="tab-check" class="tab" hidden>
     <div class="cols">

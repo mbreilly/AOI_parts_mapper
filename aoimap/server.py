@@ -21,6 +21,7 @@ from . import canon as canonlib
 from . import check as ck
 from . import db as dblib
 from . import groups as gr
+from . import models as md
 from . import photo as ph
 from . import projects as pj
 from . import teach as tl
@@ -63,7 +64,25 @@ class App:
         if changed:
             self.history.changed_groups()
         self.board.group_info = self.group_info
+        self.models_seen = {}       # design -> metrics.json time last sent to the database
         self.open_last()
+
+    def models(self, q: dict) -> dict:
+        """The MODELS page: each board design of the project chosen (or every one) and its models."""
+        boards = self.boards_for(q)
+        if boards is None:
+            boards = {b for g in gr.load(self.data)["projects"] for b in g["boards"]}
+        out = []
+        for b in sorted(boards):
+            st = md.status(self.data, b)
+            f = md.folder(self.data, b) / "metrics.json"
+            t = f.stat().st_mtime_ns if f.is_file() else 0
+            if t and self.models_seen.get(b) != t:      # trained since: the database copy follows
+                self.models_seen[b] = t
+                self.history.changed_models(b)
+            out.append(st)
+        return {"boards": out, "jobs": md.JOBS, "minimum_parts": md.MIN_PARTS,
+                "extractor": (self.data / "models" / md.EXTRACTOR).is_file()}
 
     # ---- the project chosen above the tabs (groups.py) ------------------------------------------
     def group(self) -> dict | None:
@@ -212,6 +231,8 @@ def make_handler(app: App):
                     return self._json(app.history.search_checks(q.get("q", ""), q.get("limit", 50), app.boards_for(q)))
                 if parts[1:2] == ["history"]:
                     return self._history_get(parts[2:], q)
+                if parts[1:] == ["models"]:
+                    return self._json(app.models(q))
                 if parts[1:2] == ["check"]:
                     with app.lock:
                         return self._check_get(parts[2:], q)
@@ -466,6 +487,13 @@ def make_handler(app: App):
                         else:
                             return self._err("Not found", 404)
                         return self._json({"groups": gr.view(app.data), "state": b.state()})
+                    if r == ["models", "train"]:
+                        j = self._jbody()
+                        if j.get("board") not in {b for g in gr.load(app.data)["projects"] for b in g["boards"]}:
+                            return self._err("No such board design.")
+                        jobs = [x for x in (j.get("jobs") or md.JOBS) if x in md.JOBS]
+                        md.start(app.data, j["board"], jobs or md.JOBS)
+                        return self._json(app.models({}))
                     if r[:1] == ["check"]:
                         return self._check_post(r[1:])
                     if r[:1] == ["part"]:

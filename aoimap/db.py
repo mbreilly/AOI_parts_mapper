@@ -33,8 +33,8 @@ except ImportError:   # the app still runs, without the database
     pymysql = None
 
 DEFAULT_CONFIG = Path.home() / ".config" / "aoimap" / "db.cnf"
-SCHEMA_VERSION = 4      # 2: learned examples, board choices and parts added by hand; 3: projects above the tabs;
-                        # 4: parts not stuffed (NS)
+SCHEMA_VERSION = 5      # 2: learned examples, board choices and parts added by hand; 3: projects above the tabs;
+                        # 4: parts not stuffed (NS); 5: the trained models' metrics
 
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS aoi_schema (version INT NOT NULL) ENGINE=InnoDB""",
@@ -181,6 +181,22 @@ SCHEMA = [
         open_uid VARCHAR(80) NOT NULL DEFAULT '',
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS aoi_models (
+        board VARCHAR(128) NOT NULL,
+        job VARCHAR(32) NOT NULL,
+        trained_at DATETIME NULL,
+        examples INT NOT NULL DEFAULT 0,
+        parts INT NOT NULL DEFAULT 0,
+        own_answers INT NOT NULL DEFAULT 0,
+        positives INT NOT NULL DEFAULT 0,
+        negatives INT NOT NULL DEFAULT 0,
+        accuracy DOUBLE NULL,
+        baseline DOUBLE NULL,
+        enough TINYINT(1) NOT NULL DEFAULT 0,
+        features VARCHAR(64) NOT NULL DEFAULT '',
+        metrics JSON,
+        PRIMARY KEY (board, job)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
     """CREATE TABLE IF NOT EXISTS aoi_group_boards (
         group_id VARCHAR(80) NOT NULL,
@@ -345,7 +361,33 @@ class History:
         for f in sorted((self.data / "learned").glob("*/*/examples.json")):
             board = (pj._read_json(f, {}) or {}).get("board") or f.parent.parent.name
             self.write_learned(board, f.parent.name)
+        for f in sorted((self.data / "models").glob("*/metrics.json")):
+            self.write_models((pj._read_json(f, {}) or {}).get("board") or f.parent.name)
         self.write_groups()
+
+    def changed_models(self, board: str):
+        self.changed("models:" + board)
+
+    def write_models(self, board: str):
+        """A design's model metrics (models.py), one row per job."""
+        met = pj._read_json(self.data / "models" / pj.slug(board) / "metrics.json")
+        if not met:
+            return False
+
+        def go(c):
+            for job, j in (met.get("jobs") or {}).items():
+                c.execute("""INSERT INTO aoi_models (board, job, trained_at, examples, parts, own_answers, positives, negatives,
+                               accuracy, baseline, enough, features, metrics)
+                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             ON DUPLICATE KEY UPDATE trained_at=VALUES(trained_at), examples=VALUES(examples), parts=VALUES(parts),
+                               own_answers=VALUES(own_answers), positives=VALUES(positives), negatives=VALUES(negatives),
+                               accuracy=VALUES(accuracy), baseline=VALUES(baseline), enough=VALUES(enough),
+                               features=VALUES(features), metrics=VALUES(metrics)""",
+                          (board, job, j.get("trained") or None, j.get("examples", 0), j.get("parts", 0), j.get("own", 0),
+                           j.get("pos", 0), j.get("neg", 0), j.get("accuracy"), j.get("baseline"), bool(j.get("enough")),
+                           (j.get("features") or "")[:64], json.dumps(j, sort_keys=True)))
+            return True
+        return self._run(go)
 
     def write_groups(self):
         """The whole project list (it is short): the database copy is made the same as groups.json."""
@@ -529,6 +571,8 @@ class History:
         if uid.startswith("learned:"):
             side, board = uid[8:].split(":", 1)
             return self.write_learned(board, side)
+        if uid.startswith("models:"):
+            return self.write_models(uid[7:])
         try:
             p = pj.load(self.data, uid)
             s = pj.summary(self.data, uid)

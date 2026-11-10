@@ -1103,6 +1103,72 @@ def test_viewer_api():
         srv.shutdown()
 
 
+# ---- the models trained on this machine (models.py) -------------------------------------------
+
+def test_models_learn_polarity_from_the_reference_and_answers():
+    from aoimap import models as md
+    from aoimap.check import Checks
+    b = reference_board()
+    c = Checks(b.data)
+    c.start(b.project["uid"], "SN-M")
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280), reversed_refs=("C3",)))[1].tobytes())
+    c.answer("front", "C3", "wrong", "", False, "reversed")
+    items = md.collect(b.data, b.name)
+    froms = {(e["ref"], e["from"]) for e in items}
+    assert ("C1", "reference") in froms and ("C3", "taught") in froms
+    c3 = next(e for e in items if e["ref"] == "C3" and e["from"] == "taught")
+    assert c3["right"] is False and c3["turn"] == 2 and c3["img"].shape == (md.CROP, md.CROP, 3)
+    met = md.train(b.data, b.name)
+    pol, miss = met["jobs"]["polarity"], met["jobs"]["missing"]
+    assert pol["enough"] and pol["accuracy"] is not None and pol["own"] >= 1 and pol["auto"]["turned copies"] == pol["examples"]
+    assert pol["features"] == "simple measures"       # no image network in a fresh data folder
+    assert not miss["enough"] and miss["short"]       # no MISSING or NS answers yet
+    assert (md.folder(b.data, b.name) / "polarity.npz").is_file()
+    st = md.status(b.data, b.name)
+    assert [j["job"] for j in st["jobs"]] == list(md.JOBS) and st["jobs"][1]["metrics"]["examples"] == pol["examples"]
+    # an opinion, once a model is trusted enough to give one
+    old = md.USE_ACCURACY
+    md.USE_ACCURACY, md._LOADED = 0.0, {}
+    try:
+        s = b.sides["front"]
+        g = next(p for p in b.design["parts"] if p["ref"] == "C1")
+        op = md.opinion(b.data, b.name, s["img"], s["mapping"], g, b.design["rot_sign"], "tantalum")
+        assert 0 <= op["polarity"]["p"] <= 1 and "missing" not in op and md.summary(op)
+    finally:
+        md.USE_ACCURACY, md._LOADED = old, {}
+
+
+def test_bare_pads_look_empty():
+    from aoimap import models as md
+    img = np.full((md.CROP, md.CROP, 3), (60, 140, 40), np.uint8)
+    cv2.rectangle(img, (20, 40), (45, 72), (200, 200, 200), -1)
+    cv2.rectangle(img, (67, 40), (92, 72), (200, 200, 200), -1)
+    assert md.looks_empty(img)
+    cv2.rectangle(img, (30, 42), (82, 70), (25, 25, 25), -1)        # a part's body over the pads
+    assert not md.looks_empty(img)
+
+
+def test_models_api_trains_in_the_background():
+    import time as _t
+    b = reference_board()
+    app, srv, port = _serve(b.data)
+    try:
+        r = _api(port, "api/models")
+        assert [x["board"] for x in r["boards"]] == [b.name] and r["boards"][0]["jobs"][0]["metrics"] is None
+        assert "error" in _api(port, "api/models/train", {"board": "nope"})
+        _api(port, "api/models/train", {"board": b.name, "jobs": ["polarity"]})
+        for _ in range(240):
+            p = _api(port, "api/models")["boards"][0]["progress"]
+            if p["state"] != "running":
+                break
+            _t.sleep(0.5)
+        assert p["state"] == "done", p
+        jobs = {j["job"]: j for j in _api(port, "api/models")["boards"][0]["jobs"]}
+        assert jobs["polarity"]["metrics"]["examples"] > 0 and jobs["missing"]["metrics"] is None
+    finally:
+        srv.shutdown()
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

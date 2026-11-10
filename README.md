@@ -177,6 +177,31 @@ made-up boards, and the method comes from the PTC station's orientation check. T
 real boards with known answers before trusting it, and take the reference and the boards under the
 same light.
 
+## Models
+
+The **MODELS** tab lists three small models for each board design, one per job of the check:
+**Missing part** (is it there?), **Polarity** (is a polarised part the right way round?) and
+**Orientation** (is a square part turned a quarter or half turn?). They are trained on this machine,
+from the testers' answers (GOOD, BAD with a reason, MISSING, NS) and from the reference board: its
+parts in the check count as right, its fitted parts as there, and its DNP parts as not there only when
+their pads look bare (the BOM may be wrong). Right examples turned round (and, for square parts, a
+quarter turn) make the reversed and turned examples.
+
+- **Retrain** runs in the background as its own process at the lowest priority on one core; the page
+  shows how far it has got. It takes about 15 seconds for the PTC.
+- For each model the page shows how many examples are your own answers and how many are made
+  automatically, the accuracy on parts it wasn't trained on (each part's examples are kept out in
+  turn, 5 rounds) next to what guessing would get, and what's still needed when there are too few.
+  Accuracy measured mostly on auto-made examples is a rough guide until more real answers exist.
+- Once a model has enough examples and 75% accuracy or more, its opinion is shown as **Models think**
+  on Check a board and Look at a part, with a confidence. The check's own answer still decides.
+- Pictures are described by a small pretrained image network (MobileNetV2 0.5, ImageNet weights,
+  Apache-2.0, through onnxruntime) plus simple colour and shape measures. Set it up once with
+  `pip install onnxruntime onnx` and `python -m aoimap.models setup`; without it the simple measures
+  are used alone.
+- Kept in `<data>/models/<design>/` (each job's model, `metrics.json`) and, with a database, in the
+  table `aoi_models`.
+
 ## History
 
 Each board mapped is a **project**, kept in its own folder, so mapping the next board never
