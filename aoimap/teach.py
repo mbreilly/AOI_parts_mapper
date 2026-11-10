@@ -294,6 +294,12 @@ def inspect(data: Path, src: str, ref: str) -> dict:
     return out
 
 
+def answers(data: Path, board: str, src: str) -> dict:
+    """{ref: "good" | "bad"}: how each part was last taught on this photo (src), for its map."""
+    side = src.rsplit("/", 1)[-1]
+    return {e["ref"]: e["label"] for e in ck.load_examples(data, board, side)["examples"] if e.get("source") == src}
+
+
 def add(data: Path, src: str, ref: str, label: str, reason: str = "", note: str = "") -> str:
     """Keeps the part on this photo as a good or bad example, in the reference's frame."""
     if label not in ("good", "bad"):

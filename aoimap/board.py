@@ -690,19 +690,40 @@ class Board:
         return "-".join(f"{(d / n).stat().st_mtime_ns:x}" for n in ("reference.jpg", "alignment.json")
                         if d and (d / n).is_file())
 
+    def unchecked(self, side) -> list[dict]:
+        """The design's parts on this side that aren't in the check (fiducials aside), with why and
+        their size in the photo, so the side's parts list shows every part, not only the checked ones."""
+        st = self.sides.get(side) or {}
+        if not self.design or not st.get("mapping"):
+            return []
+        layer, done = ph.SIDE_LAYER[side], {r["ref"] for r in st.get("placed", [])}
+        out = []
+        for c in self.design.get("components", []):
+            if c["side"] != layer or c["ref"] in done:
+                continue
+            poly = st["mapping"].apply(designlib.outline_corners(c, self.design["rot_sign"]))
+            px = float(min(np.linalg.norm(poly[1] - poly[0]), np.linalg.norm(poly[2] - poly[1])))
+            why = "DNP: not fitted" if c["dnp"] else "not in the BOM" if not c["in_bom"] else \
+                "not in the check: tick it on the Parts tab, or look at it and add it"
+            out.append({"ref": c["ref"], "kind": None, "value": c.get("value", ""), "package": c.get("package", ""),
+                        "px": px, "checkable": False, "in_check": False, "reason": why})
+        return out
+
     def side_state(self, side) -> dict:
         st = self.sides.get(side) or {}
         if st.get("img") is None:
             return {"photo": False}
         placed = st.get("placed", [])
+        others = self.unchecked(side)
         tiles = st.get("tiles", [])
         closeups = st.get("closeups", {})
         return {
             "photo": True, "width": st["img"].shape[1], "height": st["img"].shape[0], "stamp": self._stamp(side),
             "aligned": bool(st.get("mapping")), "points": st.get("points", {}), "how": st.get("how", ""),
             "errors": st["mapping"].errors if st.get("mapping") else [], "warnings": st.get("warnings", []),
-            "placed": placed,
-            "summary": {"parts": len(placed), "checkable": sum(r["checkable"] for r in placed),
+            "placed": placed, "others": others,
+            "summary": {"parts": len(placed) + len(others), "in_check": len(placed),
+                        "checkable": sum(r["checkable"] for r in placed),
                         "via_closeup": sum(1 for r in placed if "via" in r)},
             "tiles": [{**t, "taken": t["index"] in closeups,
                        "aligned": bool(closeups.get(t["index"], {}).get("mapping"))} for t in tiles],

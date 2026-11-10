@@ -646,6 +646,47 @@ def test_dnp_line_can_be_ticked():
     assert pj._read_json(b._profile_path(b.name))["kinds"]["DNP:R2"] == "look"
 
 
+def test_taught_parts_turn_green_or_red_on_the_map():
+    from aoimap import teach as tl
+    b = reference_board()
+    src = f"project/{b.project['uid']}/front"
+    b.teach(src, "C3", "bad", "reversed")
+    b.teach(src, "U1", "good")
+    b.teach(src, "U1", "bad")      # the latest answer wins
+    b.teach(src, "C3", "good")
+    assert tl.answers(b.data, b.name, src) == {"C3": "good", "U1": "bad"}
+    st = b.sides["front"]
+    plain = cv2.imdecode(np.frombuffer(ph.overlay(st["img"], st["placed"], width=0), np.uint8), cv2.IMREAD_COLOR)
+    vis = cv2.imdecode(np.frombuffer(ph.overlay(st["img"], st["placed"], width=0, answers=tl.answers(b.data, b.name, src)),
+                                     np.uint8), cv2.IMREAD_COLOR)
+    def edge(img, ref):        # the colour drawn along the middle of the outline's top edge
+        q = np.float32(next(r for r in st["placed"] if r["ref"] == ref)["poly"])
+        x, y = ((q[0] + q[1]) / 2).astype(int)
+        return img[y, x].astype(int)
+    red, green = np.array(ph.ANSWER_COLOURS["bad"]), np.array(ph.ANSWER_COLOURS["good"])
+    assert np.abs(edge(vis, "U1") - red).max() < 40 and np.abs(edge(plain, "U1") - red).max() > 40
+    assert np.abs(edge(vis, "C3") - green).max() < 40
+    # a check's answer is its own: teaching a check photo leaves the reference's map as it was
+    assert tl.answers(b.data, b.name, f"check/x/front") == {}
+
+
+def test_side_lists_every_part_not_only_the_checked_ones():
+    b = reference_board()
+    s = b.side_state("front")
+    on_side = [c["ref"] for c in b.design["components"] if c["side"] == "top"]
+    refs = [r["ref"] for r in s["placed"]] + [r["ref"] for r in s["others"]]
+    assert sorted(refs) == sorted(on_side) and len(set(refs)) == len(refs)
+    assert s["summary"]["parts"] == len(on_side) and s["summary"]["in_check"] == len(s["placed"])
+    assert s["others"] and all(not r["checkable"] and r["reason"] and r["px"] > 0 for r in s["others"])
+    dnp = next(r for r in s["others"] if r["ref"] == "R9") if "R9" in on_side else None
+    assert dnp is None or dnp["reason"].startswith("DNP")
+    # ticked into the check, a part leaves the not-checked list
+    r = s["others"][0]["ref"]
+    b.set_extra(r, "look")
+    s = b.side_state("front")
+    assert r in {p["ref"] for p in s["placed"]} and r not in {p["ref"] for p in s["others"]}
+
+
 def test_database_history():
     """Needs a MariaDB login: AOIMAP_TEST_DB=path/to/option-file (a throwaway database)."""
     import os

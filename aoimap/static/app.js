@@ -465,7 +465,7 @@ function renderSide(side) {
   if (!cu && st.aligned) {
     res += `<div class="dim">Lined up: ${esc(st.how)}. ${st.errors.length > 3 ? "Largest point error " + Math.max(...st.errors).toFixed(1) + " px." : ""}</div>`;
     for (const w of st.warnings) res += `<div class="warn">${esc(w)}</div>`;
-    res += `<div class="kv" style="margin-top:8px"><b>Parts on this side</b><span>${st.summary.parts}</span><b>Checkable</b><span>${st.summary.checkable}${st.summary.via_closeup ? ` (${st.summary.via_closeup} on closeups)` : ""}</span></div>`;
+    res += `<div class="kv" style="margin-top:8px"><b>Parts on this side</b><span>${st.summary.parts}</span>${st.summary.in_check !== undefined ? `<b>In the check</b><span>${st.summary.in_check}</span>` : ""}<b>Checkable</b><span>${st.summary.checkable}${st.summary.via_closeup ? ` (${st.summary.via_closeup} on closeups)` : ""}</span></div>`;
   }
   if (cu && cst && cst.aligned) res += `<div class="dim">Closeup lined up.</div>`;
   if (cu) res += `<div class="row"><button id="back-full">BACK TO THE FULL PHOTO</button></div>`;
@@ -492,9 +492,9 @@ function renderSide(side) {
   if (st.aligned && !cu) {
     $$("#parts-filter button").forEach(b => b.classList.toggle("on", b.dataset.f === ui.partsFilter));
     $("#marks-on").checked = ui.marks;
-    const rows = st.placed.filter(r => ui.partsFilter === "all" || (ui.partsFilter === "yes") === r.checkable);
+    const rows = st.placed.concat(st.others || []).filter(r => ui.partsFilter === "all" || (ui.partsFilter === "yes") === r.checkable);
     $("#side-parts tbody").innerHTML = rows.map(r => `<tr class="click ${r.ref === ui.highlight ? "sel" : ""}" data-ref="${esc(r.ref)}">
-      <td>${esc(r.ref)}</td><td>${KIND_NAMES[r.kind] || r.kind}</td><td>${esc(r.value)}</td><td>${esc(r.pin1_dir || "?")}${r.pin1_how !== "named" ? "*" : ""}</td>
+      <td>${esc(r.ref)}</td><td>${r.in_check === false ? `<span class="dim">not checked</span>` : KIND_NAMES[r.kind] || r.kind}</td><td>${esc(r.value)}</td><td>${r.in_check === false ? "—" : esc(r.pin1_dir || "?") + (r.pin1_how !== "named" ? "*" : "")}</td>
       <td>${r.px.toFixed(0)} px</td><td class="${r.checkable ? "" : "no"}" title="${esc(r.reason || r.note || "")}">${r.checkable ? (r.via !== undefined ? "closeup " + (r.via + 1) : "yes") : esc(r.reason)}</td></tr>`).join("");
   }
   drawMarks(side);
