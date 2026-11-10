@@ -187,6 +187,32 @@ def crop(data: Path, src: str, ref: str, which: str = "board") -> bytes:
     return _jpeg(_warp(_image(s["img"]), T, rect))
 
 
+def thumb(data: Path, src: str, ref: str, size: int = 120) -> bytes:
+    """A small crop of the part on this photo, for the Parts tab's list of refs. Kept on disk next to
+    the photo (thumbs/), named by the photo's and the line-up's times, so a BOM line of 20 parts costs
+    the Pi one crop each until the photo or its line-up changes."""
+    s = source(data, src)
+    size = max(48, min(320, int(size)))
+    al = pj.folder(data, s["design"]) / s["side"] / "alignment.json"
+    stamp = f"{s['img'].stat().st_mtime_ns:x}-{al.stat().st_mtime_ns if al.is_file() else 0:x}-{s['reference'] or ''}"
+    safe = "".join(ch if ch.isalnum() or ch in "-_+." else "_" for ch in ref)
+    f = s["img"].parent / "thumbs" / f"{safe}@{size}.{stamp}.jpg"
+    if f.is_file():
+        return f.read_bytes()
+    d, g = _geom(data, s, ref)
+    box, T, _ = _frame(data, s, d, g)
+    x, y, w, h = box
+    pad = max(6.0, 0.35 * max(w, h))
+    body = _jpeg(_warp(_image(s["img"]), T, [x - pad, y - pad, w + 2 * pad, h + 2 * pad]), size)
+    f.parent.mkdir(exist_ok=True)
+    for old in f.parent.glob(f"{safe}@{size}.*.jpg"):      # an older photo or line-up of this part
+        old.unlink(missing_ok=True)
+    tmp = f.with_suffix(".tmp")
+    tmp.write_bytes(body)
+    tmp.replace(f)
+    return body
+
+
 def _placed(data, uid, side, ref):
     rows = pj._read_json(pj.folder(data, uid) / side / "parts_full.json", []) or []
     return next((r for r in rows if r["ref"] == ref), None)

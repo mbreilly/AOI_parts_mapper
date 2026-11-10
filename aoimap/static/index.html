@@ -81,15 +81,11 @@
           <input id="line-search" placeholder="Search value, description or ref">
           <span class="dim" id="line-count"></span>
         </div>
-        <div class="tablewrap"><table id="lines"><thead><tr>
-          <th title="In the check">Check</th><th>Value</th><th>Description</th><th>Parts</th><th>Kind</th><th>Hidden because</th><th>Checked on this board</th></tr></thead>
-          <tbody></tbody></table></div>
-        <h2>ADD ANY PART TO THE CHECK</h2>
-        <p class="dim">Any part of the design, whether the BOM lists it or marks it polarised or not. Pick its kind: <b>Look only</b>
-          is for parts with no polarity mark (is it there, is it the right part). Kept for the next board of this design, and the
-          reference is updated straight away. You can also click any part on the Front or Back photo to look at it and teach it.</p>
-        <div class="row"><input id="xp-ref" list="dl-parts" placeholder="Ref, e.g. R12" autocomplete="off">
-          <select id="xp-kind"></select><button id="xp-add" class="accent">ADD</button></div>
+        <div class="row addbar" title="Any part of the design, whether the BOM lists it or marks it polarised or not. Look only is for parts with no polarity mark (is it there, is it the right part). Kept for the next board of this design, and the reference is updated straight away.">
+          <b>ADD ANY PART</b><input id="xp-ref" list="dl-parts" placeholder="Ref, e.g. R12" autocomplete="off">
+          <select id="xp-kind"></select><button id="xp-add" class="accent">ADD</button>
+          <span class="dim">or tick a BOM line. Press ▸ on a line to see its parts on the photos.</span>
+        </div>
         <div id="xp-list" class="list"></div>
         <div id="xp-train" hidden>
           <h3 id="xp-train-title">TEACH IT</h3>
@@ -98,6 +94,7 @@
           <div class="row"><select id="xp-src"></select><button id="xp-wait">WAIT FOR A NEW PHOTO</button><button id="xp-close">CLOSE</button></div>
           <div id="xp-insp"></div>
         </div>
+        <div class="tablewrap"><table id="lines"><thead></thead><tbody></tbody></table></div>
       </div>
       <div class="col">
         <h2>MARKINGS</h2>

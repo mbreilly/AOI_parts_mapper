@@ -468,6 +468,47 @@ def test_teach_a_part_on_a_photo_already_taken():
     assert "D2" in {k["ref"] for k in c.cur["sides"]["front"]["skipped"]}
 
 
+def test_part_thumbnails_are_cached_on_disk():
+    from aoimap import teach as tl
+    b = reference_board()
+    src = f"project/{b.project['uid']}/front"
+    first = tl.thumb(b.data, src, "R2", 120)
+    assert first[:2] == b"\xff\xd8" and max(cv2.imdecode(np.frombuffer(first, np.uint8), 1).shape[:2]) == 120
+    cache = b.dir / "front" / "thumbs"
+    files = list(cache.glob("R2@120.*.jpg"))
+    assert len(files) == 1 and files[0].read_bytes() == first
+    assert tl.thumb(b.data, src, "R2", 120) == first and list(cache.glob("R2@120.*.jpg")) == files   # read back, not cut again
+    assert b.state()["sides"]["front"]["stamp"]                                                       # the page names thumbs by it
+    # a new line-up of the photo makes a new picture and drops the old one
+    al = b.dir / "front" / "alignment.json"
+    al.write_text(al.read_text())
+    tl.thumb(b.data, src, "R2", 120)
+    assert len(list(cache.glob("R2@120.*.jpg"))) == 1 and list(cache.glob("R2@120.*.jpg")) != files
+    try:
+        tl.thumb(b.data, src, "DB1", 120)      # on the back
+        raise AssertionError("a back part on the front photo")
+    except ValueError as e:
+        assert "back" in str(e)
+
+
+def test_page_loads_versioned_scripts():
+    """index.html must load app.js / app.css by a version that changes with them, so a browser never
+    runs an old script under a new page (the parts table then shifted a column)."""
+    import re
+    from aoimap import server
+    raw = (server.STATIC / "index.html").read_text()
+    assets = re.findall(r'(?:src|href)="(static/[^"]+\.(?:js|css)[^"]*)"', raw)
+    assert {"static/app.js", "static/app.css"} <= {a.split("?")[0] for a in assets}
+    assert all("?v=" in a for a in assets), assets
+    html = server.index_html().decode()
+    for name in ("app.js", "app.css"):
+        assert f"static/{name}?v={server.asset_version(name)}" in html
+    # the parts table's header is drawn by the script with its rows, not written in the page
+    assert re.search(r'<table id="lines"><thead></thead>', raw)
+    # the add bar sits above the table, with the filters
+    assert raw.index('id="xp-add"') < raw.index('id="lines"') and raw.index('id="line-filter"') < raw.index('id="xp-add"')
+
+
 def pj_parts(b, side):
     from aoimap import projects as pj
     return pj._read_json(b.dir / side / "parts_full.json")

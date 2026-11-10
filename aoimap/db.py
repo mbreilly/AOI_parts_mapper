@@ -517,6 +517,11 @@ class History:
         got = self._run(go)
         if got is not None:
             rows, total = got
+            for r in rows:     # a record whose folder has gone (moved, or a test's) can't be opened
+                try:
+                    r["missing"] = not (pj.folder(self.data, r["uid"]) / "project.json").is_file()
+                except ValueError:
+                    r["missing"] = True
             return {"source": "database", "status": self.status, "ok": True, "projects": rows, "total": total}
         return {"source": "folders", "status": self.status, "ok": False, **self._search_folders(q, limit)}
 

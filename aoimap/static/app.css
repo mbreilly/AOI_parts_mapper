@@ -164,3 +164,16 @@ td.no { color: var(--dimInk); opacity: .7; }
 .refs { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .ref.st-checked > a, .ref.st-checked > b { color: #6FCF73; } .ref.st-skipped > a, .ref.st-skipped > b { color: var(--accent); }
 .ref.st-off { opacity: .6; }
+/* parts tab: add bar beside the filters, tick box labelled, part pictures */
+.addbar { gap: 8px; flex-wrap: wrap; align-items: center; }
+#lines td.tick { width: 52px; }
+.tickbox { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; cursor: pointer; color: var(--dimInk); }
+.tickbox.on { color: var(--accent); }
+.tickbox input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+#lines td.lparts { cursor: pointer; white-space: nowrap; }
+.refs:has(.thumb) { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+.ref.thumb { display: flex; flex-direction: column; align-items: center; width: 132px; text-decoration: none; color: inherit; font-size: 11px; text-align: center; }
+.ref.thumb img, .ref.thumb .nopic { width: 120px; height: 120px; object-fit: contain; background: var(--panelEdge); border-radius: 3px; border: 1px solid var(--panelEdge); }
+a.ref.thumb:hover img { border-color: var(--accent); }
+.ref.thumb .nopic { display: flex; align-items: center; justify-content: center; color: var(--dimInk); font-size: 11px; }
+.ref.thumb.st-checked b { color: #6FCF73; } .ref.thumb.st-skipped b { color: var(--accent); }

@@ -3,7 +3,9 @@
 The camera only works on a page served from localhost (or https), which is why this is a small
 local server rather than a file to double-click."""
 
+import hashlib
 import json
+import re
 import threading
 import traceback
 import webbrowser
@@ -27,6 +29,21 @@ from .odb import OdbError
 
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 400 * 1024 * 1024
+
+
+ASSET_RE = re.compile(r"""(static/[\w.-]+\.(?:js|css))(\?v=[^"']*)?""")
+
+
+def asset_version(name: str) -> str:
+    """Changes whenever the file does, so a browser can't run an old app.js under a new page."""
+    f = STATIC / name
+    return hashlib.sha1(f.read_bytes()).hexdigest()[:10] if f.is_file() else "0"
+
+
+def index_html() -> bytes:
+    """The page, with every app.js / app.css it loads stamped with that file's version."""
+    html = (STATIC / "index.html").read_text()
+    return ASSET_RE.sub(lambda m: f"{m.group(1)}?v={asset_version(m.group(1).split('/', 1)[1])}", html).encode()
 
 
 class App:
@@ -59,7 +76,7 @@ def make_handler(app: App):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "max-age=3600" if cache else "no-store")
+            self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
             self.end_headers()
             try:
                 self.wfile.write(body)
@@ -89,13 +106,14 @@ def make_handler(app: App):
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             try:
                 if not parts or parts == ["index.html"]:
-                    return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
+                    return self._send(200, index_html(), "text/html; charset=utf-8")
                 if parts == ["favicon.ico"]:
                     svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="#20232C"/><rect x="3" y="4" width="10" height="8" fill="none" stroke="#E0A33A" stroke-width="1.6"/><circle cx="5" cy="6" r="1.2" fill="#E3E3E3"/></svg>'
                     return self._send(200, svg, "image/svg+xml", cache=True)
                 if parts[0] == "static" and len(parts) == 2 and (STATIC / parts[1]).is_file() and "/" not in parts[1]:
                     ctype = {"js": "text/javascript", "css": "text/css", "svg": "image/svg+xml", "html": "text/html; charset=utf-8"}.get(parts[1].rsplit(".", 1)[-1], "application/octet-stream")
-                    return self._send(200, (STATIC / parts[1]).read_bytes(), ctype, cache=True)
+                    # versioned (?v=, see index_html) may be kept; anything else is checked every time
+                    return self._send(200, (STATIC / parts[1]).read_bytes(), ctype, cache="v" in q)
                 if parts[0] != "api":
                     return self._err("Not found", 404)
                 if parts[1:] == ["canon"]:
@@ -202,6 +220,8 @@ def make_handler(app: App):
                 return self._json(tl.inspect(data, q["src"], q["ref"]))
             if r == ["crop"]:
                 return self._send(200, tl.crop(data, q["src"], q["ref"], q.get("which", "board")), "image/jpeg")
+            if r == ["thumb"]:     # the URL carries the photo's stamp, so the browser may keep it
+                return self._send(200, tl.thumb(data, q["src"], q["ref"], int(q.get("size", 120))), "image/jpeg", cache=True)
             return self._err("Not found", 404)
 
         def _part_post(self, r):

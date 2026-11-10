@@ -179,7 +179,7 @@ async function loadRecent() {
   recentAt = Date.now();
   try {
     const h = await api("api/history?limit=6");
-    $("#boards").innerHTML = h.projects.length ? h.projects.map(r => `<div class="${r.uid === h.current ? "cur" : ""}"><span class="grow">${esc(r.board)}${r.serial ? ` <span class="ok">${esc(r.serial)}</span>` : ""}<br><span class="dim">${esc(r.updated)} · ${sideBrief(r, "front")} · ${sideBrief(r, "back")}</span></span>${r.uid === h.current ? `<span class="dim">OPEN NOW</span>` : `<button data-reopen="${esc(r.uid)}">OPEN</button>`}</div>`).join("")
+    $("#boards").innerHTML = h.projects.length ? h.projects.map(r => `<div class="${r.uid === h.current ? "cur" : ""}"><span class="grow">${esc(r.board)}${r.serial ? ` <span class="ok">${esc(r.serial)}</span>` : ""}<br><span class="dim">${esc(r.updated)} · ${sideBrief(r, "front")} · ${sideBrief(r, "back")}</span></span>${r.uid === h.current ? `<span class="dim">OPEN NOW</span>` : r.missing ? `<span class="dim" title="Only its database record is left">FOLDER GONE</span>` : `<button data-reopen="${esc(r.uid)}">OPEN</button>`}</div>`).join("")
       : `<div class="dim">None yet. A project is saved as soon as its ODB++ and BOM are in.</div>`;
   } catch (e) { $("#boards").innerHTML = `<div class="dim">${esc(e.message)}</div>`; }
 }
@@ -188,15 +188,28 @@ const sideBrief = (r, side) => {
   if (!s.parts) return `${n} none`;
   return s.aligned ? `${n} ${s.checkable}/${s.parts}` : s.photo ? `${n} photo` : `${n} –`;
 };
-function reopen(uid) {
-  return act(() => post(`api/history/${encodeURIComponent(uid)}/open`, {}), "Reopened the project as it was left.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
+// The list is reloaded before render() so it moves OPEN NOW straight away: two boards of one design
+// otherwise look the same, and the button seemed to do nothing.
+async function projectAct(btn, busy, fn, done) {
+  const was = btn && btn.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = busy; }
+  say(busy);
+  await act(async () => { const st = await fn(); recentAt = 0; return st; }, done);
+  if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = was; }
+  if (S && S.design) goTab("files");
 }
-function newFrom(uid) {
-  return act(() => post(`api/history/${encodeURIComponent(uid)}/new`, {}), "New project for another board of the same design. Its choices are carried over; take the photos.").then(() => { recentAt = 0; if (S && S.design) goTab("files"); });
+function reopen(uid, btn) {
+  return projectAct(btn, "OPENING...", () => post(`api/history/${encodeURIComponent(uid)}/open`, {}),
+    "Reopened the project as it was left.").then(() => S.project && S.project.uid === uid &&
+      say(`Opened ${S.project.board || S.name}${S.project.serial ? " " + S.project.serial : ""} as it was left.`));
+}
+function newFrom(uid, btn) {
+  return projectAct(btn, "STARTING...", () => post(`api/history/${encodeURIComponent(uid)}/new`, {}),
+    "New project for another board of the same design. Its choices are carried over; take the photos.");
 }
 document.addEventListener("click", e => {
-  const o = e.target.closest("[data-reopen]"); if (o) reopen(o.dataset.reopen);
-  const n = e.target.closest("[data-newfrom]"); if (n) newFrom(n.dataset.newfrom);
+  const o = e.target.closest("[data-reopen]"); if (o && !o.disabled) reopen(o.dataset.reopen, o);
+  const n = e.target.closest("[data-newfrom]"); if (n && !n.disabled) newFrom(n.dataset.newfrom, n);
 });
 async function saveInfo(uid, body) {
   try { const d = await post(`api/history/${encodeURIComponent(uid)}/info`, body); recentAt = 0; return d; }
@@ -224,17 +237,13 @@ function renderParts() {
   $$("#line-filter button").forEach(b => b.classList.toggle("on", b.dataset.f === ui.lineFilter));
   const nIn = S.lines.filter(l => l.chosen_kind).length;
   $("#line-count").textContent = `${nIn} of ${S.lines.length} BOM lines in the check`;
+  // header and cells come from one list, so they can't drift apart
+  $("#lines thead").innerHTML = `<tr>${LINE_COLS.map(c => `<th title="${esc(c.tip || "")}">${c.head}</th>`).join("")}</tr>`;
   $("#lines tbody").innerHTML = lines.map(l => {
     const open = ui.openLines.has(l.key);
-    return `<tr data-key="${esc(l.key)}" class="${l.dnp ? "dnp" : ""}">
-    <td><input type="checkbox" data-tick ${l.chosen_kind ? "checked" : ""} ${l.on_board.length ? "" : "disabled"} title="${l.chosen_kind ? "In the check: untick to take its parts out" : "Tick to check its parts"}"></td>
-    <td>${l.dnp ? `<span class="tag">DNP</span> ` : ""}${esc(l.value)}</td><td>${esc(l.description)}${l.why && !l.chosen_kind ? ` <span class="dim">(suggested: ${esc(l.why)})</span>` : ""}</td>
-    <td title="${esc(l.refs.join(", "))}">${l.on_board.length}${l.on_board.length !== l.refs.length ? ` of ${l.refs.length}` : ""}</td>
-    <td><select data-kind>${["", ...Object.keys(KIND_NAMES)].map(k => `<option value="${k}" ${(l.chosen_kind || "") === k ? "selected" : ""}>${k ? KIND_NAMES[k] : "Not checked"}</option>`).join("")}</select></td>
-    <td><input data-hidden value="${esc(l.hidden || "")}" placeholder="${l.chosen_kind ? "visible" : "why not (optional)"}"></td>
-    <td class="lstat" data-expand title="Show each part">${open ? "▾" : "▸"} ${lineSummary(l)}</td></tr>`
-      + (open ? `<tr class="sub"><td></td><td colspan="6">${lineRefs(l)}</td></tr>` : "");
-  }).join("") || `<tr><td colspan="7" class="no">No lines match.</td></tr>`;
+    return `<tr data-key="${esc(l.key)}" class="${l.dnp ? "dnp" : ""}">${LINE_COLS.map(c => `<td class="${c.cls || ""}" ${c.attr ? c.attr(l) : ""}>${c.cell(l, open)}</td>`).join("")}</tr>`
+      + (open ? `<tr class="sub"><td></td><td colspan="${LINE_COLS.length - 1}">${lineRefs(l)}</td></tr>` : "");
+  }).join("") || `<tr><td colspan="${LINE_COLS.length}" class="no">No lines match.</td></tr>`;
   const mk = S.profile.markings;
   $("#markings").innerHTML = ["tantalum", "electrolytic", "diode", "led"].map(k => `<div class="row"><span class="lab" style="width:100px">${KIND_NAMES[k].toUpperCase()}</span>
     <div class="seg" data-mark="${k}"><button data-end="pin1" class="${mk[k] === "pin1" ? "on" : ""}">AT PIN 1</button><button data-end="other" class="${mk[k] === "other" ? "on" : ""}">AT PIN 2</button></div></div>`).join("");
@@ -251,15 +260,29 @@ function renderParts() {
   // parts added by hand
   if (S.project) loadPartList(S.project.uid);
   if (!$("#xp-kind").options.length) $("#xp-kind").innerHTML = Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("");
-  $("#xp-list").innerHTML = (S.extras || []).map(x => `<div><span class="grow"><b>${esc(x.ref)}</b> ${esc(KIND_NAMES[x.kind] || x.kind)} · ${x.side}
+  $("#xp-list").innerHTML = (S.extras || []).length ? `<div class="dim">ADDED BY HAND</div>` : "";
+  $("#xp-list").innerHTML += (S.extras || []).map(x => `<div><span class="grow"><b>${esc(x.ref)}</b> ${esc(KIND_NAMES[x.kind] || x.kind)} · ${x.side}
       <span class="dim">${esc(x.value || x.package)}${x.in_bom ? "" : " · not in the BOM"}${x.missing ? " · not in this design!" : ""}</span><br>
       <span class="dim">${x.good} good, ${x.bad} bad${x.wait && !(x.good + x.bad) ? " · waiting for a new photo" : ""}</span></span>
     <button data-xtrain="${esc(x.ref)}" data-side="${x.side}">TRAIN</button>
     <button data-xwait="${esc(x.ref)}" class="${x.wait ? "on" : ""}" title="Ask about it on the next check of its side until it's answered">WAIT FOR PHOTO</button>
-    <button data-xdel="${esc(x.ref)}">REMOVE</button></div>`).join("") || `<div class="dim">None added yet.</div>`;
+    <button data-xdel="${esc(x.ref)}">REMOVE</button></div>`).join("");
 }
 // whether a BOM line's parts are checked on the board open here, by side
 const SIDE_SHORT = { front: "FRONT", back: "BACK" };
+const LINE_COLS = [
+  { head: "Add", tip: "Tick to add the line's parts to the check", cls: "tick",
+    cell: l => `<label class="tickbox ${l.chosen_kind ? "on" : ""}"><input type="checkbox" data-tick ${l.chosen_kind ? "checked" : ""} ${l.on_board.length ? "" : "disabled"}
+      title="${l.chosen_kind ? "In the check: untick to take its parts out" : "Tick to check its parts"}">${l.chosen_kind ? "IN" : "ADD"}</label>` },
+  { head: "Value", cell: l => `${l.dnp ? `<span class="tag">DNP</span> ` : ""}${esc(l.value)}` },
+  { head: "Description", cell: l => `${esc(l.description)}${l.why && !l.chosen_kind ? ` <span class="dim">(suggested: ${esc(l.why)})</span>` : ""}` },
+  { head: "Parts", cls: "lparts", attr: l => `data-expand title="${esc(l.refs.join(", "))}"`,
+    cell: (l, open) => `${open ? "▾" : "▸"} ${l.on_board.length}${l.on_board.length !== l.refs.length ? ` of ${l.refs.length}` : ""}` },
+  { head: "Kind", cell: l => `<select data-kind>${["", ...Object.keys(KIND_NAMES)].map(k => `<option value="${k}" ${(l.chosen_kind || "") === k ? "selected" : ""}>${k ? KIND_NAMES[k] : "Not checked"}</option>`).join("")}</select>` },
+  { head: "Hidden because", tip: "Parts that can't be seen (under a heatsink or shield)",
+    cell: l => `<input data-hidden value="${esc(l.hidden || "")}" placeholder="${l.chosen_kind ? "visible" : "why not (optional)"}">` },
+  { head: "Checked on this board", cls: "lstat", attr: () => `data-expand title="Show each part"`, cell: (l, open) => `${open ? "▾" : "▸"} ${lineSummary(l)}` },
+];
 function lineSummary(l) {
   const st = l.status || [], inCheck = st.filter(r => r.status !== "off");
   const g = st.reduce((a, r) => a + r.good, 0), b = st.reduce((a, r) => a + r.bad, 0);
@@ -275,12 +298,23 @@ function lineSummary(l) {
   const skipped = Object.entries(why).map(([k, n]) => `${n} ${esc(k)}`).join(", ");
   return sides.join(" · ") + (skipped ? ` <span class="dim">· skipped: ${skipped}</span>` : "") + learned;
 }
+// each part of a line, with a small picture of it on this board's photo of its side when there is one
+// (lazy: only open lines, and the browser fetches only what scrolls into view; the Pi keeps the crops)
+const thumbSrc = (side, ref) => `api/part/thumb?src=${encodeURIComponent(sideSrc(side))}&ref=${encodeURIComponent(ref)}&size=120&v=${S.sides[side].stamp || ""}`;
 function lineRefs(l) {
   const mark = { checked: "✓", skipped: "✗", nophoto: "–", off: "·" };
-  return `<div class="refs">${(l.status || []).map(r => {
-    const can = r.side && S.sides[r.side] && S.sides[r.side].photo;
-    return `<span class="ref st-${r.status}">${can ? `<a href="#" data-look="${esc(r.ref)}" data-side="${r.side}" title="Look at it on the ${r.side}">${esc(r.ref)}</a>` : `<b>${esc(r.ref)}</b>`}
-      ${mark[r.status] || ""} <span class="dim">${r.side ? SIDE_SHORT[r.side].toLowerCase() : ""}${r.why ? " · " + esc(r.why) : r.status === "checked" ? " · checked" : ""}${r.extra ? " · added by hand" : ""}${r.good + r.bad ? ` · ${r.good} good, ${r.bad} bad` : ""}</span></span>`;
+  const st = l.status || [];
+  if (!st.length) return `<div class="dim">No parts of this line are on the board.</div>`;
+  const noPhoto = ["front", "back"].filter(s => st.some(r => r.side === s) && !(S.sides[s] && S.sides[s].aligned));
+  return (noPhoto.length ? `<div class="dim">${noPhoto.map(s => `${SIDE_SHORT[s]}: ${S.sides[s] && S.sides[s].photo ? "photo not lined up yet" : "no photo yet"}`).join(" · ")}</div>` : "")
+    + `<div class="refs">${st.map(r => {
+    const can = r.side && S.sides[r.side] && S.sides[r.side].aligned;
+    const info = `${mark[r.status] || ""} <span class="dim">${r.side ? SIDE_SHORT[r.side].toLowerCase() : ""}${r.why ? " · " + esc(r.why) : r.status === "checked" ? " · checked" : ""}${r.extra ? " · added by hand" : ""}${r.good + r.bad ? ` · ${r.good} good, ${r.bad} bad` : ""}</span>`;
+    return can
+      ? `<a href="#" class="ref thumb st-${r.status}" data-look="${esc(r.ref)}" data-side="${r.side}" title="Look at ${esc(r.ref)} on the ${r.side}">
+          <img loading="lazy" decoding="async" alt="" src="${thumbSrc(r.side, r.ref)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'nopic',textContent:'no picture'}))">
+          <b>${esc(r.ref)}</b><span>${info}</span></a>`
+      : `<span class="ref thumb st-${r.status}"><span class="nopic">${r.side ? "no photo yet" : ""}</span><b>${esc(r.ref)}</b><span>${info}</span></span>`;
   }).join("")}</div>`;
 }
 const XP = { ref: null, side: null };
@@ -340,7 +374,7 @@ $("#lines").addEventListener("change", e => {
 });
 $("#lines").addEventListener("click", e => {
   const a = e.target.closest("[data-look]");
-  if (a) { e.preventDefault(); const side = a.dataset.side, ref = a.dataset.look; goTab(side); return lookAt(side, ref); }
+  if (a) { e.preventDefault(); e.stopPropagation(); const side = a.dataset.side, ref = a.dataset.look; goTab(side); return lookAt(side, ref); }
   const x = e.target.closest("[data-expand]"); if (!x) return;
   const key = x.closest("tr").dataset.key;
   ui.openLines.has(key) ? ui.openLines.delete(key) : ui.openLines.add(key);

@@ -684,6 +684,12 @@ class Board:
             out[ln["key"]] = rows
         return out
 
+    def _stamp(self, side) -> str:
+        """Changes when the side's photo or its line-up does (names the part pictures in the page)."""
+        d = self.dir / side if self.dir else None
+        return "-".join(f"{(d / n).stat().st_mtime_ns:x}" for n in ("reference.jpg", "alignment.json")
+                        if d and (d / n).is_file())
+
     def side_state(self, side) -> dict:
         st = self.sides.get(side) or {}
         if st.get("img") is None:
@@ -692,7 +698,7 @@ class Board:
         tiles = st.get("tiles", [])
         closeups = st.get("closeups", {})
         return {
-            "photo": True, "width": st["img"].shape[1], "height": st["img"].shape[0],
+            "photo": True, "width": st["img"].shape[1], "height": st["img"].shape[0], "stamp": self._stamp(side),
             "aligned": bool(st.get("mapping")), "points": st.get("points", {}), "how": st.get("how", ""),
             "errors": st["mapping"].errors if st.get("mapping") else [], "warnings": st.get("warnings", []),
             "placed": placed,
