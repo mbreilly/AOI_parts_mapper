@@ -660,7 +660,9 @@ class Board:
                 side = on_board.get(ref)
                 r = {"ref": ref, "side": side or "", **(learned.get(side, {}).get(ref) or {"good": 0, "bad": 0})}
                 p = in_check.get(ref)
-                if not side:
+                if ref in self.design["fiducials"]:
+                    r.update(status="off", why="fiducial, used to line the photo up")
+                elif not side:
                     r.update(status="off", why="not on the board (not in the ODB++)")
                 elif not p:
                     r.update(status="off", why=("DNP, not ticked" if ln.get("dnp") else "not ticked")

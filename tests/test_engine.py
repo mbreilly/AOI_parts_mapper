@@ -517,7 +517,7 @@ def test_tick_bom_lines_into_the_check_and_status():
     ref_uid, board = b.project["uid"], b.project["board"]
     L = lines_by_key(b)
     # every BOM line is listed, DNP ones too, each with whether its parts are checked on this board
-    assert L["DNP:10K"]["dnp"] and not L["DNP:10K"]["chosen_kind"] and L["DNP:10K"]["status"][0]["why"].startswith("not on the board")
+    assert L["DNP:R9"]["dnp"] and not L["DNP:R9"]["chosen_kind"] and L["DNP:R9"]["status"][0]["why"].startswith("not on the board")
     st = {r["ref"]: r for l in L.values() for r in l["status"]}
     assert st["C3"]["status"] == "checked" and st["UB1"]["status"] == "nophoto"
     assert st["D1"]["status"] == "skipped" and "too small" in st["D1"]["why"] and "closeup planned" in st["D1"]["why"], st["D1"]
@@ -590,18 +590,19 @@ def test_dnp_line_can_be_ticked():
     bom = TMP / "dnp" / "bom.csv"
     bom.parent.mkdir(exist_ok=True)
     text = BOM.read_text().replace('"R1, R2, RB1"', '"R1, RB1"')
-    bom.write_text(text + '99,1,R2,ERJ-3GEY0R00V,"RES 0R 0603",DNP\n')
+    bom.write_text(text + '99,1,R2,DNP,"RES 0R 0603",DNP\n98,1,FIDT1,DNP,"Fiducial",DNP\n')
     b = Board(Path(tempfile.mkdtemp(prefix="aoimap-data-")))
     b.add_file("odb", ODB.name, ODB.read_bytes())
     b.add_file("bom", "bom.csv", bom.read_bytes())
     L = lines_by_key(b)
-    dnp = L["DNP:ERJ-3GEY0R00V"]
+    dnp = L["DNP:R2"]
+    assert not L["DNP:FIDT1"]["on_board"] and L["DNP:FIDT1"]["status"][0]["why"].startswith("fiducial")
     assert dnp["dnp"] and dnp["on_board"] == ["R2"] and not dnp["chosen_kind"]
-    assert dnp["status"][0]["why"] == "DNP, not ticked" and b.design["dnp_on_board"] == ["R2"]
-    b.set_lines({"DNP:ERJ-3GEY0R00V": {"kind": "look"}})
+    assert dnp["status"][0]["why"] == "DNP, not ticked" and "R2" in b.design["dnp_on_board"]
+    b.set_lines({"DNP:R2": {"kind": "look"}})
     r2 = next(p for p in b.design["parts"] if p["ref"] == "R2")
-    assert r2["kind"] == "look" and r2["key"] == "DNP:ERJ-3GEY0R00V"
-    assert pj._read_json(b._profile_path(b.name))["kinds"]["DNP:ERJ-3GEY0R00V"] == "look"
+    assert r2["kind"] == "look" and r2["key"] == "DNP:R2"
+    assert pj._read_json(b._profile_path(b.name))["kinds"]["DNP:R2"] == "look"
 
 
 def test_database_history():
