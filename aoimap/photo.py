@@ -430,10 +430,11 @@ def dashed_poly(vis, pts, col, t, dash: int = 8):
 
 
 def overlay(img: np.ndarray, placed: list[dict], width: int = 1600, highlight: str | None = None,
-            show_marks: bool = True, answers: dict | None = None) -> bytes:
+            show_marks: bool = True, answers: dict | None = None, outlines: bool = True) -> bytes:
     """A JPEG of the photo with every part outlined in its kind's colour, pin 1 of a polarised part as a dot, the expected
     polarity mark drawn, and parts that can't be checked in grey. answers: {ref: "good" | "bad"}, the
-    parts taught on this photo, outlined green or red instead ("ns": not stuffed, grey dashed and labelled NS)."""
+    parts taught on this photo, outlined green or red instead ("ns": not stuffed, grey dashed and labelled NS).
+    outlines=False draws only the pin 1 dots and band marks: the page draws the outlines over it, coloured by status."""
     s = min(1.0, width / img.shape[1]) if width else 1.0
     vis = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s != 1 else img.copy()
     t = max(1, int(round(2 * vis.shape[1] / 1600)))
@@ -442,13 +443,17 @@ def overlay(img: np.ndarray, placed: list[dict], width: int = 1600, highlight: s
         ans = ANSWER_COLOURS.get((answers or {}).get(r["ref"]))
         col = ans or col
         q = (np.float32(r["poly"]) * s).astype(np.int32)
-        if (answers or {}).get(r["ref"]) == "ns":
+        if not outlines:
+            if (answers or {}).get(r["ref"]) == "ns":
+                continue
+        elif (answers or {}).get(r["ref"]) == "ns":
             dashed_poly(vis, q, col, t + (2 if r["ref"] == highlight else 0))
             x, y = (int(v * s) for v in r["poly"][0])
             cv2.putText(vis, f"{r['ref']} NS", (x, max(10, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4 * max(1, t), col, 1, cv2.LINE_AA)
             continue
-        cv2.polylines(vis, [q], True, col, t + (2 if r["ref"] == highlight else 0) + (1 if ans else 0), cv2.LINE_AA)
-        if r.get("pin1") and r["kind"] != "look":    # a non-polarised part has no pin 1 to show
+        if outlines:
+            cv2.polylines(vis, [q], True, col, t + (2 if r["ref"] == highlight else 0) + (1 if ans else 0), cv2.LINE_AA)
+        if r.get("pin1") and r["kind"] != "look" and (outlines or show_marks):    # a non-polarised part has no pin 1 to show
             cv2.circle(vis, tuple(int(v * s) for v in r["pin1"]), max(2, t + 1), (0, 0, 255) if r["checkable"] else GREY, -1, cv2.LINE_AA)
         if show_marks and r.get("mark") and r["checkable"] and r["mark"]["type"] == "band":
             at, to = np.float32(r["mark"]["at"]) * s, np.float32(r["mark"]["towards"]) * s
@@ -460,7 +465,7 @@ def overlay(img: np.ndarray, placed: list[dict], width: int = 1600, highlight: s
                 half = 0.5 * min(np.linalg.norm(q[1] - q[0]), np.linalg.norm(q[2] - q[1]))
                 p0, p1 = at + d * 0.15 * n - perp * half, at + d * 0.15 * n + perp * half
                 cv2.line(vis, tuple(p0.astype(int)), tuple(p1.astype(int)), (255, 255, 255), t + 1, cv2.LINE_AA)
-        if (r["checkable"] or ans) and (r["px"] * s > 18 or r["ref"] == highlight or ans):
+        if outlines and (r["checkable"] or ans) and (r["px"] * s > 18 or r["ref"] == highlight or ans):
             x, y = (int(v * s) for v in r["poly"][0])
             cv2.putText(vis, r["ref"], (x, max(10, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4 * max(1, t), col, 1, cv2.LINE_AA)
     ok, buf = cv2.imencode(".jpg", vis, [cv2.IMWRITE_JPEG_QUALITY, 88])

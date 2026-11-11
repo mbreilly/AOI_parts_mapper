@@ -252,6 +252,9 @@ def _inspect(data: Path, src: str, ref: str) -> dict:
            "good": sum(e["label"] == "good" for e in ex), "bad": sum(e["label"] == "bad" for e in ex),
            "examples": [{k: e.get(k, "") for k in ("id", "label", "reason", "note", "serial", "date")} for e in ex[-6:]],
            "answer": None, "verdict": "skipped", "why": ""}
+    mine = [e for e in ex if e.get("source") == src]
+    if mine:      # the last answer given on this very photo (GOOD or BAD), so the page can show and undo it
+        out["taught"] = {"id": mine[-1]["id"], "label": mine[-1]["label"], "reason": mine[-1].get("reason", "")}
     ns = ck.not_stuffed(data, board, side, ck.ns_key(s["serial"], s["uid"])).get(ref)
     out["ns"] = ns or ""        # "board": not stuffed on this board, "all": on every board of the design
     placed = _placed(data, s["reference"], side, ref) if s["reference"] else None

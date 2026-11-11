@@ -724,6 +724,7 @@ class Board:
             why = "DNP: not fitted" if c["dnp"] else "not in the BOM" if not c["in_bom"] else \
                 "not in the check: tick it on the Parts tab, or look at it and add it"
             out.append({"ref": c["ref"], "kind": None, "value": c.get("value", ""), "package": c.get("package", ""),
+                        "poly": [[round(float(x), 1), round(float(y), 1)] for x, y in poly],
                         "px": px, "checkable": False, "in_check": False, "reason": why})
         return out
 

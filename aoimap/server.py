@@ -253,7 +253,8 @@ def make_handler(app: App):
                             marks = q.get("marks", "1") != "0"
                             taught = tl.answers(b.data, b.name, f"project/{b.project['uid']}/{side}") if b.project else {}
                             return self._send(200, ph.overlay(st["img"], st["placed"], width=int(q.get("w", 1600)),
-                                                              highlight=hl, show_marks=marks, answers=taught), "image/jpeg")
+                                                              highlight=hl, show_marks=marks, answers=taught,
+                                                              outlines=q.get("outlines", "1") != "0"), "image/jpeg")
                         if what == "ghost.svg":
                             return self._send(200, ph.ghost_svg(b.design, side, b.profile["orient"][side]).encode(),
                                               "image/svg+xml")

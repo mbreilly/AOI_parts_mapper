@@ -14,6 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import check as ck
 from . import netlist as nl
 from . import photo as ph
 from . import teach as tl
@@ -126,6 +127,9 @@ def status(b) -> dict:
                 if ref in out:
                     out[ref]["answer"] = ans
                     out[ref]["st"] = ans
+            for e in ck.load_examples(b.data, b.name, side)["examples"]:
+                if e.get("source") == f"project/{b.project['uid']}/{side}" and e["ref"] in out and e["label"] == "bad":
+                    out[e["ref"]]["reason"] = e.get("reason", "")
     for ref, o in out.items():
         p = kinds.get(ref)
         o["kind"] = p["kind"] if p else None
