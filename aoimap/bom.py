@@ -22,15 +22,21 @@ KINDS = {"tantalum": "Tantalum capacitor", "electrolytic": "Electrolytic capacit
 
 # Default keyword rules, checked in order against the upper-cased description, value and type.
 DEFAULT_RULES = [
-    {"kind": None, "any": ["TVS", "ESD", "BIDIR"], "unless": ["SCHOTTKY"], "note": "bidirectional protection diode"},
+    {"kind": None, "any": ["TVS", "ESD", "BIDIR"], "unless": ["SCHOTTKY", "IC", "TRANSLATOR", "TRANSCEIVER", "BUFFER"],
+     "note": "bidirectional protection diode"},
     {"kind": "tantalum", "any": ["TANT"]},
     {"kind": "electrolytic", "any": ["ALUM", "ELECTROLYTIC", "POLYMER"]},
     {"kind": "led", "any": ["LED"]},
     {"kind": "diode", "any": ["SCHOTTKY", "ZENER", "RECTIFIER", "DIODE"]},
     {"kind": "ic", "starts": ["IC"], "any": ["CONVERTER", "MCU", "FPGA", "SENSOR", "MULTIPLEXER", "MUX", "REGULATOR",
                                             "OSC", "CRYSTAL", "MICROCONTROLLER", "EEPROM", "FLASH", "AMPLIFIER", "OPAMP",
-                                            "OP AMP", "TRANSCEIVER", "LDO"]},
+                                            "OP AMP", "TRANSCEIVER", "LDO", "TRANSLATOR"]},
+    {"kind": "ic", "any": ["MOSFET", "TRANSISTOR", "BJT"], "note": "transistor: pin 1 matters"},
 ]
+
+# A part the keywords don't place, whose references all name an IC (U, U1, UT38...) or a transistor
+# (Q, QB2...), still has a pin 1 to check.
+REF_KINDS = [(re.compile(r"^[UQ][A-Z]?\d"), "ic")]
 
 
 class BomError(Exception):
@@ -136,6 +142,9 @@ def read_bom(path: Path, columns: dict | None = None, rules=None) -> dict:
             continue
         value, desc, typ = get(r, "value"), re.sub(r"\s+", " ", get(r, "description")), get(r, "type")
         kind, why = classify(" ".join((desc, value, typ)), rules)
+        if kind is None:        # no description word (BIDIR, ESD...) makes an IC or transistor non-polarised
+            kind, why = next(((k, f"{refs[0][0]}-prefixed reference: an IC or transistor, with a pin 1")
+                              for rx, k in REF_KINDS if all(rx.match(r) for r in refs)), (None, ""))
         if cols.get("dnp") is not None and _is_dnp(get(r, "dnp"), header[cols["dnp"]]):
             dnp += refs
             dnp_lines.append({"value": value, "description": desc, "type": typ, "refs": refs, "kind": kind, "why": why, "dnp": True})

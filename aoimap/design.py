@@ -23,9 +23,10 @@ def line_key(line: dict) -> str:
 
 
 def outline_corners(p: dict, rot_sign: int = 1) -> list[list[float]]:
-    """The four corners of the part's package box on the board, in board units."""
+    """The four corners of the part's package box on the board, in board units. The part's own
+    rotation direction (read from its pins) wins over rot_sign, which is for parts without one."""
     x0, y0, x1, y1 = p["bbox"]
-    t = math.radians(p["rot"]) * rot_sign
+    t = math.radians(p["rot"]) * (p.get("turn") or rot_sign)
     c, s = math.cos(t), math.sin(t)
     m = -1 if p["mirror"] else 1
     return [[p["x"] + c * m * u - s * v, p["y"] + s * m * u + c * v] for u, v in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
@@ -84,7 +85,7 @@ def _part(c, kind: str, line: dict, hidden=None, key=""):
     other = None
     if len(c.pins) == 2 and pin1:
         other = next(v for v in c.pins.values() if v is not pin1)
-    return {"ref": c.ref, "side": c.side, "x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror,
+    return {"ref": c.ref, "side": c.side, "x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror, "turn": c.turn,
             "package": c.package, "bbox": c.bbox, "pin1": pin1, "pin1_how": how, "other_pin": other,
             "pins": len(c.pins), "kind": kind, "value": line.get("value", ""), "description": line.get("description", ""),
             "hidden": hidden, "key": key}
@@ -123,7 +124,11 @@ def build(odb: OdbDesign, bom: dict, profile: dict) -> dict:
     rot_sign = profile.get("rot_sign")
     ev = rotation_evidence(parts)
     if rot_sign is None:
-        rot_sign = -1 if ev["votes"][-1] > ev["votes"][1] else 1
+        turns = [c.turn for c in odb.parts if c.turn]
+        if ev["votes"][1] != ev["votes"][-1] or not turns:
+            rot_sign = -1 if ev["votes"][-1] > ev["votes"][1] else 1
+        else:       # every part's direction is known from its pins: rot_sign only labels the usual one
+            rot_sign = -1 if turns.count(-1) >= turns.count(1) else 1
     for p in parts:
         p["corners"] = outline_corners(p, rot_sign)
         p["pin1_dir"] = pin1_direction(p)
@@ -152,11 +157,13 @@ def components(odb: OdbDesign, bom: dict, design: dict) -> list[dict]:
             continue
         line = bom["lines"][bom["parts"][c.ref]] if c.ref in bom["parts"] else None
         p = in_check.get(c.ref)
-        out.append({"ref": c.ref, "side": c.side, "x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror, "bbox": c.bbox,
-                    "package": c.package, "in_bom": bool(line),
+        pin1, how = pin1_of(c.pins) if len(c.pins) > 2 else (None, "none")   # two-pin parts outside the check: no pin 1 to show
+        out.append({"ref": c.ref, "side": c.side, "x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror, "turn": c.turn,
+                    "bbox": c.bbox, "package": c.package, "in_bom": bool(line),
                     "dnp": c.ref in bom["dnp"], "value": line["value"] if line else "",
                     "description": line["description"] if line else "",
-                    "kind": p["kind"] if p else None, "extra": bool(p and p.get("extra"))})
+                    "kind": p["kind"] if p else None, "extra": bool(p and p.get("extra")),
+                    "pin1": pin1, "pin1_how": how})
     out.sort(key=lambda r: re.sub(r"\d+", lambda m: m.group().zfill(6), r["ref"]))
     return out
 

@@ -70,7 +70,7 @@ def geometry(b) -> dict:
         if ln and ln["key"] not in lines:
             lines[ln["key"]] = {"value": ln.get("value", ""), "description": ln.get("description", ""),
                                 "qty": len(ln["refs"]), "dnp": bool(ln.get("dnp"))}
-        parts.append({"r": p.ref, "s": p.side, "x": _r(p.x, nd), "y": _r(p.y, nd), "a": p.rot * d["rot_sign"],
+        parts.append({"r": p.ref, "s": p.side, "x": _r(p.x, nd), "y": _r(p.y, nd), "a": p.rot * (p.turn or d["rot_sign"]),
                       "m": p.mirror, "b": [_r(v, nd) for v in p.bbox], "k": p.package,
                       "v": c.get("value", ln["value"] if ln else ""), "f": p.ref in d["fiducials"],
                       "l": ln["key"] if ln else None})

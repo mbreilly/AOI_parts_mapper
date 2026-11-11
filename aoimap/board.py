@@ -837,9 +837,12 @@ class Board:
             px = float(min(np.linalg.norm(poly[1] - poly[0]), np.linalg.norm(poly[2] - poly[1])))
             why = "DNP: not fitted" if c["dnp"] else "not in the BOM" if not c["in_bom"] else \
                 "not in the check: tick it on the Parts tab, or look at it and add it"
-            out.append({"ref": c["ref"], "kind": None, "value": c.get("value", ""), "package": c.get("package", ""),
-                        "poly": [[round(float(x), 1), round(float(y), 1)] for x, y in poly],
-                        "px": px, "checkable": False, "in_check": False, "reason": why})
+            r = {"ref": c["ref"], "kind": None, "value": c.get("value", ""), "package": c.get("package", ""),
+                 "poly": [[round(float(x), 1), round(float(y), 1)] for x, y in poly],
+                 "px": px, "checkable": False, "in_check": False, "reason": why}
+            if c.get("pin1"):
+                r["pin1"] = [round(float(v), 1) for v in st["mapping"].apply([c["pin1"]])[0]]
+            out.append(r)
         return out
 
     def side_state(self, side) -> dict:

@@ -741,8 +741,11 @@ function drawParts(side) {
   const area = r => { const p = r.poly; let a = 0; for (let i = 0; i < p.length; i++) { const [x1, y1] = p[i], [x2, y2] = p[(i + 1) % p.length]; a += x1 * y2 - x2 * y1; } return Math.abs(a / 2); };
   const rows = sideRows(side).filter(r => r.poly).map(r => [r, area(r)]).sort((a, b) => b[1] - a[1]);   // small parts on top
   const sel = ui.look[side];
-  let polys = "", labels = "";
+  let polys = "", labels = "", dots = "";
+  const dotR = Math.max(2, st.width / 900);
   for (const [r] of rows) {
+    // parts outside the check: their pin 1 is drawn here (the server draws it for the checked ones)
+    if (r.pin1 && r.in_check === false) dots += `<circle class="pin1${filtered && !shown.has(r.ref) && r.ref !== sel ? " dimmed" : ""}" cx="${r.pin1[0]}" cy="${r.pin1[1]}" r="${dotR}"/>`;
     const k = pstat(r.ref), dim = filtered && !shown.has(r.ref) && r.ref !== sel ? " dimmed" : "";
     polys += `<polygon data-ref="${esc(r.ref)}" class="st-${k}${dim}${r.ref === sel ? " sel" : ""}" style="stroke:${STATUS_COL[k]}" points="${r.poly.map(q => q.join(",")).join(" ")}"><title>${esc(r.ref)} · ${STATUS[k].t}${covNote(PS.parts[r.ref])}${(PS.parts[r.ref] || {}).why ? " · " + esc(PS.parts[r.ref].why) : ""}</title></polygon>`;
     if (k !== "off" || r.ref === sel) {
@@ -750,7 +753,7 @@ function drawParts(side) {
       labels += `<text class="${dim}" x="${x}" y="${y}" dy="-0.35em" style="fill:${r.ref === sel ? "var(--st-sel)" : STATUS_COL[k]}">${esc(r.ref)}</text>`;
     }
   }
-  svg.innerHTML = polys + labels;
+  svg.innerHTML = polys + dots + labels;
 }
 // the selection, without drawing everything again: photo outline, list row, and both scrolled to it
 function markSel(side, scroll = true) {

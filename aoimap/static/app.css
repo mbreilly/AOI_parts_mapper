@@ -233,6 +233,8 @@ td.no { color: var(--dimInk); opacity: .7; }
 .parts polygon.st-off { stroke-width: calc(var(--u) * 1.2); opacity: .6; }
 .parts polygon.st-ns { stroke-dasharray: calc(var(--u) * 6) calc(var(--u) * 4); }
 .parts polygon.dimmed { opacity: .12; }
+.parts circle.pin1 { fill: #FF3B3B; stroke: none; pointer-events: none; }
+.parts circle.pin1.dimmed { opacity: .12; }
 .parts polygon.sel { stroke: var(--st-sel) !important; stroke-width: calc(var(--u) * 4.5); fill: color-mix(in srgb, var(--st-sel) 14%, transparent); opacity: 1; filter: drop-shadow(0 0 3px #000); }
 .parts polygon:hover { stroke-width: calc(var(--u) * 3.5); }
 .parts text { font-weight: 700; font-family: var(--font); font-size: calc(var(--u) * 12); paint-order: stroke; stroke: #0E0F11; stroke-width: calc(var(--u) * 3); pointer-events: none; }

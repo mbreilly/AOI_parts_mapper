@@ -93,7 +93,7 @@ def cut(img, mapping, g, rot_sign, size: int = CROP, margin: float = 0.25):
     x0, y0, x1, y1 = g["bbox"]
     m = margin * max(x1 - x0, y1 - y0, 1e-6)
     u0, u1, v0, v1 = x0 - m, x1 + m, y0 - m, y1 + m
-    t = math.radians(g["rot"]) * rot_sign
+    t = math.radians(g["rot"]) * (g.get("turn") or rot_sign)
     c, s = math.cos(t), math.sin(t)
     mir = -1 if g.get("mirror") else 1
     board = [[g["x"] + c * mir * u - s * v, g["y"] + s * mir * u + c * v] for u, v in ((u0, v1), (u1, v1), (u0, v0), (u1, v0))]

@@ -6,6 +6,7 @@ folder and only read as text; nothing in them is run.
 """
 
 import gzip
+import math
 import re
 import shutil
 import tarfile
@@ -26,11 +27,12 @@ class OdbPart:
     x: float
     y: float
     rot: float           # degrees, as written in the file
-    mirror: bool
+    mirror: bool         # drawn mirrored: the file's flag, or what the pins show (bottom parts often are, unflagged)
     package: str
     bbox: list           # [xmin, ymin, xmax, ymax] relative to the part centre
     part_name: str = ""
     pins: dict = field(default_factory=dict)   # pin name -> [x, y], absolute board coordinates
+    turn: int = 0        # which way rot runs for this part, +1 anticlockwise or -1 clockwise, from its pins; 0 unknown
 
 
 @dataclass
@@ -146,6 +148,42 @@ def pin1_of(pins: dict) -> tuple[list | None, str]:
     return None, "none"
 
 
+def place_point(c, u: float, v: float, turn: int, mirror: bool) -> tuple[float, float]:
+    """A point of the part's package (u, v) on the board, for a rotation direction and mirroring."""
+    t = math.radians(c.rot) * turn
+    co, si, m = math.cos(t), math.sin(t), -1 if mirror else 1
+    return c.x + co * m * u - si * v, c.y + si * m * u + co * v
+
+
+def _fit_transforms(parts, placed, tol):
+    """Works out, for each part, which way its rotation runs and whether it is mirrored, from where
+    its package's pins land on the board (the TOP records). Exporters differ: the spec says clockwise,
+    and bottom parts are mirrored whether flagged or not. A part whose pins can't tell (no pins, or
+    symmetric either way) takes what most parts on its side showed, else the spec (clockwise)."""
+    fits, votes = {}, {"top": {}, "bot": {}}
+    for c in parts:
+        pins, *on_board = placed.get(c.ref, [[]])
+        on_board = [(pins[i], x, y) for i, x, y in on_board if 0 <= i < len(pins) and pins[i]]
+        if not on_board:
+            continue
+        ok = [(turn, mir) for turn in (-1, 1) for mir in (c.mirror, not c.mirror)
+              if all(math.dist(place_point(c, *uv, turn, mir), (x, y)) <= tol for uv, x, y in on_board)]
+        fits[c.ref] = ok
+        if len(ok) == 1:
+            votes[c.side][ok[0]] = votes[c.side].get(ok[0], 0) + 1
+    for c in parts:
+        ok = fits.get(c.ref) or []
+        best = max(votes[c.side], key=votes[c.side].get) if votes[c.side] else None
+        if len(ok) == 1:
+            c.turn, c.mirror = ok[0]
+        elif best and (not ok or best in ok):
+            c.turn, c.mirror = best
+        elif ok:
+            c.turn, c.mirror = next((f for f in ok if f[0] == -1), ok[0])
+        else:
+            c.turn = -1
+
+
 def read_step(step: Path, name: str | None = None) -> OdbDesign:
     step = Path(step)
     units, known = _units(step)
@@ -154,12 +192,17 @@ def read_step(step: Path, name: str | None = None) -> OdbDesign:
     for t in _records(step / "eda" / "data"):
         if t[0] == "PKG" and len(t) >= 7:
             try:
-                pkgs.append({"name": t[1], "bbox": [float(v) for v in t[3:7]]})
+                pkgs.append({"name": t[1], "bbox": [float(v) for v in t[3:7]], "pins": []})
             except ValueError:
-                pkgs.append({"name": t[1], "bbox": [0, 0, 0, 0]})
+                pkgs.append({"name": t[1], "bbox": [0, 0, 0, 0], "pins": []})
+        elif t[0] == "PIN" and pkgs and len(t) >= 5:
+            try:
+                pkgs[-1]["pins"].append((float(t[3]), float(t[4])))
+            except ValueError:
+                pkgs[-1]["pins"].append(None)
     if not pkgs:
         notes.append("No packages found in eda/data, so part outlines are unknown; a small box is used.")
-    parts, fiducials = [], {}
+    parts, fiducials, placed = [], {}, {}    # placed: ref -> [(package pin, board x, board y)]
     for side in ("top", "bot"):
         c = None
         for t in _records(step / "layers" / f"comp_+_{side}" / "components"):
@@ -169,6 +212,7 @@ def read_step(step: Path, name: str | None = None) -> OdbDesign:
                     c = OdbPart(ref=t[6], side=side, x=float(t[2]), y=float(t[3]), rot=float(t[4]),
                                 mirror=t[5].upper() == "M", package=pk["name"], bbox=list(pk["bbox"]),
                                 part_name=t[7] if len(t) > 7 else "")
+                    placed[c.ref] = [pk.get("pins") or []]
                 except ValueError:
                     c = None
                     continue
@@ -178,10 +222,12 @@ def read_step(step: Path, name: str | None = None) -> OdbDesign:
             elif t[0] == "TOP" and c is not None and len(t) >= 4:
                 try:
                     c.pins[t[-1]] = [float(t[2]), float(t[3])]
+                    placed[c.ref].append((int(t[1]), float(t[2]), float(t[3])))
                 except ValueError:
                     pass
     if not parts:
         raise OdbError("No components found. The ODB++ needs layers/comp_+_top/components or comp_+_bot/components.")
+    _fit_transforms(parts, placed, 0.002 if units == "inch" else 0.05)
     xs, ys = [], []
     for t in _records(step / "profile"):
         if t[0] in ("OB", "OS") and len(t) >= 3:

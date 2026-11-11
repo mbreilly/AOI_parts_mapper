@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fixture as fx
-from aoimap import bom as bomlib, odb as odblib, photo as ph
+from aoimap import bom as bomlib, design as designlib, odb as odblib, photo as ph
 from aoimap.board import Board
 
 TMP = Path(tempfile.mkdtemp(prefix="aoimap-test-"))
@@ -153,16 +153,19 @@ def test_two_points_wrong_order_and_rotation_choice():
     pts["FIDT1"], pts["FIDT2"] = pts["FIDT2"], pts["FIDT1"]
     s = b.align("front", pts)
     assert s["warnings"], "swapped fiducials should warn"
-    # rotation: the design already decided (-1); the choice shows U2 or U3 both ways
+    # rotation: every part's pins say which way it turns, so there's nothing to choose
     b.align("front", click(Hm, b.design, ["FIDT1", "FIDT2", "FIDT3", "FIDT4"], "front"))
-    rc = b.rotation_choice("front")
-    assert rc["needed"] and rc["ref"] in ("U2", "U3") and len(rc["crops"]) == 2
-    # forcing the wrong direction moves the off-centre ICs
-    b.set_option("rot_sign", 1)
-    wrong = {r["ref"]: r for r in b.sides["front"]["placed"]}
-    b.set_option("rot_sign", "auto")
+    assert not b.rotation_choice("front")["needed"]
+    assert all(p["turn"] == -1 for p in b.design["parts"] if p["side"] == "top")
+    # ...and forcing a direction by hand doesn't move a part whose pins already told
     right = {r["ref"]: r for r in b.sides["front"]["placed"]}
-    assert np.linalg.norm(np.float32(wrong["U2"]["poly"]).mean(0) - np.float32(right["U2"]["poly"]).mean(0)) > 20
+    b.set_option("rot_sign", 1)
+    forced = {r["ref"]: r for r in b.sides["front"]["placed"]}
+    b.set_option("rot_sign", "auto")
+    assert np.linalg.norm(np.float32(forced["U2"]["poly"]).mean(0) - np.float32(right["U2"]["poly"]).mean(0)) < 0.5
+    # without pin data in the ODB++ the hand-set direction still applies
+    g = dict(next(p for p in b.design["parts"] if p["ref"] == "U2"), turn=0)
+    assert designlib.outline_corners(g, 1) != designlib.outline_corners(g, -1)
 
 
 def test_profile_kept_for_next_board_and_markings():
@@ -1495,6 +1498,44 @@ def test_models_api_trains_in_the_background():
         assert jobs["polarity"]["metrics"]["examples"] > 0 and jobs["missing"]["metrics"] is None
     finally:
         srv.shutdown()
+
+
+def test_every_part_outline_holds_its_pins_on_the_ptc_odb():
+    """On the real PTC ODB++ (when this machine has it), every part's outline holds the centre of its
+    own pins, on both sides: the SFP cages JT3/JT4 (whose package origin is off the body) included."""
+    src = Path.home() / "aoimap-data" / "uploads" / "odb.tgz"
+    if not src.is_file():
+        print("skip test_every_part_outline_holds_its_pins_on_the_ptc_odb (no PTC ODB++ here)")
+        return
+    odb, _ = odblib.load(src)
+    tol = 1e-4
+    off = []
+    for c in odb.parts:
+        if not c.pins:
+            continue
+        cx = sum(p[0] for p in c.pins.values()) / len(c.pins)
+        cy = sum(p[1] for p in c.pins.values()) / len(c.pins)
+        g = {"x": c.x, "y": c.y, "rot": c.rot, "mirror": c.mirror, "turn": c.turn, "bbox": c.bbox}
+        if not designlib._inside((cx, cy), designlib.outline_corners(g), tol):
+            off.append(c.ref)
+    assert not off, off
+    assert {c.side for c in odb.parts} == {"top", "bot"}
+
+
+def test_ics_and_transistors_keep_pin_1_whatever_the_description_says():
+    """A level translator called BIDIR(ECTIONAL) is not a bidirectional TVS diode: a U or Q part is
+    always polarised, while a real TVS stays out."""
+    with tempfile.TemporaryDirectory() as t:
+        f = Path(t) / "bom.csv"
+        f.write_text("Reference,Value,Description\n"
+                     "UT38,TXS0104EPWR,IC TRANSLATOR BIDIR 14TSSOP\n"
+                     "UT29,TXS0102DCUR,IC TRNSLTR BIDIRECTIONAL 8VSSOP\n"
+                     "QB1,BSS138,MOSFET N-CH 50V 220MA SOT-23-3\n"
+                     "DT1,SMCJ12CA,TVS DIODE 12VWM 19.9VC SMC\n"
+                     "R1,10k,RES 10K 1% 0603\n")
+        b = bomlib.read_bom(f)
+        kind = {ln["refs"][0]: ln["kind"] for ln in b["lines"]}
+        assert kind == {"UT38": "ic", "UT29": "ic", "QB1": "ic", "DT1": None, "R1": None}, kind
 
 
 if __name__ == "__main__":
