@@ -41,6 +41,9 @@ DEFAULT_PROFILE = {
 slug = pj.slug
 # the choices of what to check: the same on every board of a design (kept in the board profile)
 DESIGN_KEYS = ("kinds", "hidden", "extra")
+# how one board lies in its photos: kept with its project, so a board photographed turned round
+# doesn't change the design's (taken from the first board of the design)
+BOARD_KEYS = ("orient",)
 
 
 def _write_json(path: Path, obj):
@@ -321,7 +324,8 @@ class Board:
                 if k in shared:
                     self.profile[k] = shared[k]
         _write_json(self.dir / "profile.json", self.profile)
-        _write_json(self._profile_path(self.name), self.profile)
+        keep = {k: shared[k] for k in BOARD_KEYS if shared and k in shared}
+        _write_json(self._profile_path(self.name), {**self.profile, **keep})
         if self.on_profile:
             self.on_profile(self.name)
 

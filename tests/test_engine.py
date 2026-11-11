@@ -188,6 +188,25 @@ def test_profile_kept_for_next_board_and_markings():
     assert marking(kinds["UB1"], b2.profile["markings"])["type"] == "dot"
 
 
+def test_orientation_kept_per_board_not_for_the_design():
+    b = new_board()
+    first = b.project["uid"]
+    design_orient = json.loads((b._profile_path(b.name)).read_text())["orient"]
+    b.new_from(first)
+    second = b.project["uid"]
+    b.set_orient("front", [-1, 1])          # this board photographed turned round
+    b.set_option("min_px", 12)              # any later save keeps it to the board too
+    assert b.profile["orient"]["front"] == [-1, 1]
+    assert json.loads((b._profile_path(b.name)).read_text())["orient"] == design_orient
+    assert json.loads((b._profile_path(b.name)).read_text())["min_px"] == 12
+    b.open_project(first)
+    assert b.profile["orient"] == design_orient
+    b.open_project(second)
+    assert b.profile["orient"]["front"] == [-1, 1]
+    b.new_from(second)
+    assert b.profile["orient"] == design_orient
+
+
 def test_no_fiducials_uses_board_corners():
     b = new_board()
     b.design["fiducials"] = {}
