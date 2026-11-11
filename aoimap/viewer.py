@@ -103,6 +103,9 @@ def pins(b) -> dict:
     return {"pins": out}
 
 
+_VERDICTS = {}      # (project, ref, photo stamp, examples time, reference) -> (verdict, why)
+
+
 def status(b) -> dict:
     """{ref: {"st", "why", "kind", "extra"}} for each part: "bad" / "good" (answered on this board's
     photo), "ns" (not stuffed), "checked" (in the check and its photo shows it), "skipped" (in the
@@ -119,9 +122,12 @@ def status(b) -> dict:
                                   "good": 0, "bad": 0})
     for side in ("front", "back"):
         st = b.sides.get(side) or {}
+        taught = ck.taught_refs(b.data, b.name, side) | ck.pending_refs(b.data, b.name, side)
         for r in st.get("placed", []):      # parts added by hand are in the check but on no BOM line
             if r["ref"] in out and out[r["ref"]]["st"] == "off":
-                out[r["ref"]].update(st="checked" if r["checkable"] else "skipped", why=r.get("reason") or "")
+                small = (r.get("reason") or "").startswith("too small") and r["ref"] in taught
+                out[r["ref"]].update(st="checked" if r["checkable"] or small else "skipped",
+                                     why="small in the photo; checked because it has been answered" if small else r.get("reason") or "")
         if b.project:
             for ref, ans in tl.answers(b.data, b.name, f"project/{b.project['uid']}/{side}").items():
                 if ref in out:
@@ -134,6 +140,26 @@ def status(b) -> dict:
         p = kinds.get(ref)
         o["kind"] = p["kind"] if p else None
         o["extra"] = bool(p and p.get("extra"))
+    # parts put in the check on another board since this one was last open: what the check makes of
+    # them here (compared with the reference and what was answered there), until answered here
+    for ref, since in ((b.project or {}).get("new_in_check") or {}).items():
+        o = out.get(ref)
+        if not o or o.get("answer") or o["st"] != "checked":
+            continue
+        o["new"] = since
+        try:
+            side = "front" if kinds[ref]["side"] == "top" else "back"
+            ex = ck.learned_dir(b.data, b.name, side) / "examples.json"
+            key = (b.project["uid"], ref, b._stamp(side), ex.stat().st_mtime_ns if ex.is_file() else 0,
+                   tl.newest_reference(b.data, b.name, side))
+            if key not in _VERDICTS:
+                r = tl._inspect(b.data, f"project/{b.project['uid']}/{side}", ref)
+                _VERDICTS[key] = (r["verdict"], r["why"])
+                while len(_VERDICTS) > 500:
+                    _VERDICTS.pop(next(iter(_VERDICTS)))
+            o["verdict"], o["verdict_why"] = _VERDICTS[key]
+        except (ValueError, KeyError, OSError):
+            pass
     return {"parts": out}
 
 

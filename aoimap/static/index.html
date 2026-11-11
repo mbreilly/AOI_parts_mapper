@@ -329,6 +329,28 @@
     </div>
   </section>
 
+  <!-- REVIEW A REFERENCE CHANGE (opened from the Map tab or History; not a tab of its own) -->
+  <section id="tab-review" class="tab" hidden>
+    <div class="cols">
+      <div class="col wide stack">
+        <div class="bar">
+          <h2 class="grow ell" id="rv-title">REVIEW REFERENCE CHANGE</h2>
+          <span class="badge" id="rv-left"></span>
+          <button id="rv-later">SAVE AND FINISH LATER</button>
+          <button id="rv-finish" class="accent">FINISH: USE THE NEW REFERENCE</button>
+          <details class="more"><summary>MORE</summary><div class="menu"><button id="rv-cancel">CANCEL: KEEP THE OLD REFERENCE</button><button id="rv-undo">UNDO: PUT THE OLD REFERENCE BACK</button></div></details>
+        </div>
+        <p class="dim" id="rv-sub"></p>
+        <div class="bar">
+          <div class="seg" id="rv-filter"></div>
+          <span class="grow"></span>
+          <button id="rv-approve" title="ACCEPT NEW for every part not decided yet whose only difference is its look, and that the models see there and the same way round on both">APPROVE ALL THAT MATCH</button>
+        </div>
+        <div class="scroller" id="rv-scroll"><div id="rv-rows"></div></div>
+      </div>
+    </div>
+  </section>
+
   <!-- HISTORY -->
   <section id="tab-history" class="tab" hidden>
     <div class="cols">

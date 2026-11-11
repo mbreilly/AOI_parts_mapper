@@ -241,8 +241,9 @@ def ns_why(scope: str) -> str:
 
 
 def taught_refs(data: Path, board: str, side: str) -> set:
-    """Parts with at least one learned example on this side."""
-    return {e["ref"] for e in load_examples(data, board, side)["examples"]}
+    """Parts answered on this side of some board: with a learned example, or NS on one board."""
+    d = load_examples(data, board, side)
+    return {e["ref"] for e in d["examples"]} | {r for k, refs in d["not_stuffed"].items() if k != ALL_BOARDS for r in refs}
 
 
 def board_profile(data: Path, board: str) -> dict:
@@ -418,15 +419,21 @@ def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = Non
         out.update(status="check", why="no mark shows on the reference photo, so look at it by eye")
     else:
         out.update(status="check", why="its mark can't be made out in this photo")
-    if reference_wrong and part["kind"] != "look" and out["status"] in ("ok", "reversed"):
+    look = part["kind"] == "look"
+    # a part the reference shows wrong (answered BAD or MISSING there, or missed by the check): matching
+    # the reference doesn't pass it; good examples decide instead (a polarised part reversed from the
+    # reference's look is the right way round)
+    if reference_wrong and not look and out["status"] in ("ok", "reversed"):
         out.update(status="ok", why="the right way round: the reference shows this part wrong") if out["status"] == "reversed" else \
             out.update(status="reversed", why="looks like the reference, which shows this part the wrong way round")
+    elif reference_wrong and look and out["status"] == "ok":
+        out.update(status="check", why="looks like the reference, which shows this part wrong")
     learned = learned or {}
-    look = part["kind"] == "look"
     good = [(_learned_match(area, im, (w, h), look), e) for im, e in learned.get("good", [])]
     bad = [(_learned_match(area, im, (w, h), look), e) for im, e in learned.get("bad", [])]
-    # the closest right look: confirmed-good examples and the reference (turned round if it shows the part wrong)
-    best_good = max([v for v, _ in good] + [max(same, rev) if look else rev if reference_wrong else same])
+    # the closest right look: confirmed-good examples and the reference (turned round if it shows the part
+    # wrong; not at all for a part with no polarity mark that the reference shows wrong)
+    best_good = max([v for v, _ in good] + [-1.0 if look and reference_wrong else max(same, rev) if look else rev if reference_wrong else same])
     best_bad, bad_ex = max(bad, key=lambda v: v[0]) if bad else (-1.0, None)
     if best_bad >= MIN_MATCH and best_bad > best_good + LEARNED_MARGIN:
         seen = " ".join(v for v in (bad_ex.get("serial"), bad_ex.get("date", "")[:10]) if v)
@@ -505,6 +512,7 @@ class Checks:
         self.cur = None             # check.json of the check open on the page
         self.on_change = None       # called with a check's uid whenever it changes
         self._img = {}              # (uid, side, name) -> image, for crops
+        self._seen = {}             # check uid -> _stamp() when last refreshed
 
     def _touch(self, what: str | None = None):
         c = self.cur
@@ -537,6 +545,7 @@ class Checks:
     def open(self, uid: str):
         self.cur = load(self.data, uid)
         self._img.clear()
+        self.refresh()
 
     def close(self):
         self.cur = None
@@ -653,20 +662,12 @@ class Checks:
         board = self.cur["board"]
         pending = pending_refs(self.data, board, side)
         parts, skipped = self._ref_parts(side, taught_refs(self.data, board, side) | pending)
-        margin = max(8, int(0.004 * ref.shape[1]))
-        learned = example_images(self.data, board, side)
-        wrong = set(load_examples(self.data, board, side)["reference_wrong"].get(self.cur["reference"], []))
-        results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong) for p in parts]
-        self._models(side, aligned, results)
+        results = self._compare(side, aligned, parts)
         ns = self._ns(side)
         usual = [r for r in results if r["ref"] not in pending and r["ref"] not in ns]
         if usual and np.median([max(r["score"], r["turned"]) for r in usual]) < 0.45 and not (force and len(usual) < 3):
             return False
-        for r in results:
-            if r["ref"] in ns:           # not stuffed on purpose: not a fault, nothing to ask
-                r.update(seen={"status": r["status"], "why": r["why"]}, status="ns", why=ns_why(ns[r["ref"]]))
-            elif r["ref"] in pending:    # added by hand to wait for a photo: always asked until taught
-                r.update(status="check", new=True, why="new part, teach me: is it right?")
+        self._mark(side, results, pending)
         d = folder(self.data, self.cur["uid"]) / side
         cv2.imwrite(str(d / "aligned.jpg"), aligned, [cv2.IMWRITE_JPEG_QUALITY, 92])
         self._img[(self.cur["uid"], side, "aligned")] = aligned
@@ -676,6 +677,81 @@ class Checks:
         self._touch(f"{side.capitalize()} checked: {len(results)} parts, "
                     + (f"{len(flagged)} flagged ({', '.join(flagged[:12])}{' ...' if len(flagged) > 12 else ''})" if flagged else "none flagged"))
         return True
+
+    def _compare(self, side, aligned, parts) -> list[dict]:
+        """Each part on the lined-up photo compared with the reference and the learned examples."""
+        ref, board = self._ref(side), self.cur["board"]
+        margin = max(8, int(0.004 * ref.shape[1]))
+        learned = example_images(self.data, board, side)
+        wrong = set(load_examples(self.data, board, side)["reference_wrong"].get(self.cur["reference"], []))
+        results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong) for p in parts]
+        self._models(side, aligned, results)
+        return results
+
+    def _mark(self, side, results, pending):
+        ns = self._ns(side)
+        for r in results:
+            if r["ref"] in ns:           # not stuffed on purpose: not a fault, nothing to ask
+                r.update(seen={"status": r["status"], "why": r["why"]}, status="ns", why=ns_why(ns[r["ref"]]))
+            elif r["ref"] in pending:    # added by hand to wait for a photo: always asked until taught
+                r.update(status="check", new=True, why="new part, teach me: is it right?")
+
+    def _stamp(self) -> tuple:
+        """Changes when what the open check covers might: the reference's placed parts, what's been
+        learned, or the design's choices."""
+        c, out = self.cur, []
+        for side in c["sides"]:
+            for f in (pj.folder(self.data, c["reference"]) / side / "parts_full.json",
+                      learned_dir(self.data, c["board"], side) / "examples.json"):
+                out.append(f.stat().st_mtime_ns if f.is_file() else 0)
+        f = Path(self.data) / "boards" / pj.slug(c["board"]) / "profile.json"
+        return tuple(out) + (f.stat().st_mtime_ns if f.is_file() else 0,)
+
+    def refresh(self) -> list[str]:
+        """Parts put in the check since this check was run (answered on another board of the design, or
+        added to it) are compared on its photo now, marked new since the check, and counted. The
+        answers already given are left as they are. Returns the parts added ("front C12", ...)."""
+        c = self.cur
+        if not c or not any(st.get("aligned") for st in c["sides"].values()):
+            return []
+        key = self._stamp()
+        if self._seen.get(c["uid"]) == key:
+            return []
+        added = []
+        try:
+            for side, st in c["sides"].items():
+                if not st.get("aligned") or "results" not in st:
+                    continue
+                board = c["board"]
+                pending = pending_refs(self.data, board, side)
+                parts, skipped = self._ref_parts(side, taught_refs(self.data, board, side) | pending)
+                have = {r["ref"] for r in st["results"]}
+                new = [p for p in parts if p["ref"] not in have]
+                had_sk = {k["ref"] for k in st.get("skipped", [])}
+                new_sk = [k for k in skipped if k["ref"] not in had_sk and k["ref"] not in have]
+                if not new and not new_sk:
+                    continue
+                if new:
+                    img = self._aligned(c["uid"], side)
+                    res = self._compare(side, img, new)
+                    self._mark(side, res, pending)
+                    for r in res:
+                        r["since"] = pj.now()[:10]
+                    st["results"] += res
+                    (folder(self.data, c["uid"]) / side / "result.jpg").write_bytes(overlay(img, st["results"]))
+                    added += [f"{side} {r['ref']}" for r in res]
+                taken = {p["ref"] for p in new}
+                st["skipped"] = [k for k in st.get("skipped", []) if k["ref"] not in taken] + new_sk
+                save(self.data, c)
+        except (ValueError, OSError):        # the reference or this check's photo has gone: shown as it was
+            import traceback
+            traceback.print_exc()
+            return []
+        if added:
+            self._touch(f"New in the check since this board was checked: {', '.join(added[:20])}"
+                        + (" ..." if len(added) > 20 else "") + " (compared now; the answers given before are kept)")
+        self._seen[c["uid"]] = self._stamp()
+        return added
 
     def _models(self, side, aligned, results):
         """The trained models' opinion of each part (models.py), kept beside the check's own answer."""
@@ -796,7 +872,16 @@ class Checks:
 
     def forget(self, board: str, side: str, ex_id: str):
         """Deletes a learned example, and the answer that made it stops pointing at it."""
+        ex = next((e for e in load_examples(self.data, board, side)["examples"] if e["id"] == ex_id), None)
         delete_example(self.data, board, side, ex_id)
+        src = (ex or {}).get("source", "").split("/")
+        if ex and ex["label"] == "bad" and len(src) == 3 and src[0] == "project":
+            # a BAD answer on a reference's photo taken back: the reference is trusted for it again,
+            # unless another BAD answer on that photo still says otherwise
+            left = [e for e in load_examples(self.data, board, side)["examples"]
+                    if e["ref"] == ex["ref"] and e["label"] == "bad" and e.get("source") == ex["source"]]
+            if not left and ex["ref"] in load_examples(self.data, board, side)["reference_wrong"].get(src[1], []):
+                set_reference_wrong(self.data, board, side, src[1], ex["ref"], False)
         if self.cur and self.cur["board"] == board:
             for r in self.cur["sides"].get(side, {}).get("results", []):
                 if r.get("example") == ex_id:
@@ -866,4 +951,5 @@ class Checks:
         return self.view(self.cur if self.cur and self.cur["uid"] == uid else load(self.data, uid))
 
     def state(self) -> dict:
+        self.refresh()
         return {"references": references(self.data), "check": self.view(self.cur) if self.cur else None}

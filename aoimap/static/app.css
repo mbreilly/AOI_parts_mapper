@@ -326,3 +326,17 @@ table.md td .dim { margin: 2px 0; }
   .selpanel .keys { display: none; }
   .selpanel .ref { font-size: 19px; }
 }
+
+/* carried answers: what happens on every board of the design, and parts new since a board was checked */
+.carry { font-size: 13px; margin: 6px 0; color: var(--ink); opacity: .9; }
+.newtag { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  background: var(--st-sel); color: var(--panelEdge); white-space: nowrap; flex: none; }
+
+/* reviewing a change of reference: one row per difference, old and new side by side */
+.rvrow { border: 1px solid #34363d; border-radius: 4px; padding: 8px 10px; margin: 8px; display: grid;
+  grid-template-columns: 150px 150px 1fr; gap: 10px; align-items: start; background: color-mix(in srgb, var(--panelEdge) 35%, transparent); }
+.rvrow.decided { opacity: .7; }
+.rvrow figure { margin: 0; font-size: 12px; text-align: center; color: var(--dimInk); }
+.rvrow img { display: block; width: 150px; height: 150px; object-fit: contain; background: var(--panelEdge); border-radius: 3px; }
+.rvrow .answers { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+@media (max-width: 700px) { .rvrow { grid-template-columns: 1fr 1fr; } .rvrow > div { grid-column: 1 / -1; } }

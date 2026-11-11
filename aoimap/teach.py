@@ -83,9 +83,10 @@ def newest_reference(data: Path, board: str, side: str) -> str | None:
     return next((r["uid"] for r in ck.references(data) if r["board"] == board and side in r["sides"]), None)
 
 
-def source(data: Path, src: str) -> dict:
+def source(data: Path, src: str, reference: str | None = None) -> dict:
     """What a source id names: the photo, its board, the mapping from the board to it, the project
-    whose design it uses and the reference whose frame examples are kept in."""
+    whose design it uses and the reference whose frame examples are kept in (the board's newest
+    reference, or the one given: a reference change compares a board with the reference it replaces)."""
     bits = (src or "").split("/")
     if len(bits) != 3 or bits[0] not in ("project", "check") or bits[2] not in pj.SIDES:
         raise ValueError("No such photo.")
@@ -94,7 +95,7 @@ def source(data: Path, src: str) -> dict:
         p = pj.load(data, uid)
         img = pj.folder(data, uid) / side / "reference.jpg"
         out = {"board": p["board"], "design": uid, "mapping": _mapping(data, uid, side), "serial": p.get("serial", ""),
-               "check": "", "reference": newest_reference(data, p["board"], side), "is_reference": False}
+               "check": "", "reference": reference or newest_reference(data, p["board"], side), "is_reference": False}
         out["is_reference"] = out["reference"] == uid
         label = ("Reference " if p.get("reference") else "Mapped board ") + (p.get("serial") or uid)
     else:
@@ -171,9 +172,9 @@ def _jpeg(img, size=220):
     return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tobytes()
 
 
-def crop(data: Path, src: str, ref: str, which: str = "board") -> bytes:
+def crop(data: Path, src: str, ref: str, which: str = "board", reference: str | None = None) -> bytes:
     """The part with some board round it: on this photo, or on the reference, in the same frame."""
-    s = source(data, src)
+    s = source(data, src, reference)
     d, g = _geom(data, s, ref)
     box, T, ref_uid = _frame(data, s, d, g)
     x, y, w, h = box
@@ -218,13 +219,13 @@ def _placed(data, uid, side, ref):
     return next((r for r in rows if r["ref"] == ref), None)
 
 
-def inspect(data: Path, src: str, ref: str) -> dict:
+def inspect(data: Path, src: str, ref: str, reference: str | None = None) -> dict:
     """What the app makes of one part on one photo: correct, wrong, unsure or skipped, and why; and
     what the trained models make of it (models.py), as an extra opinion."""
-    out = _inspect(data, src, ref)
+    out = _inspect(data, src, ref, reference)
     try:
         from . import models as md
-        s = source(data, src)
+        s = source(data, src, reference)
         d, g = _geom(data, s, ref)
         op = md.opinion(data, s["board"], _image(s["img"]), s["mapping"], g, d["rot_sign"], out.get("kind"))
         if op:
@@ -235,8 +236,8 @@ def inspect(data: Path, src: str, ref: str) -> dict:
     return out
 
 
-def _inspect(data: Path, src: str, ref: str) -> dict:
-    s = source(data, src)
+def _inspect(data: Path, src: str, ref: str, reference: str | None = None) -> dict:
+    s = source(data, src, reference)
     d, g = _geom(data, s, ref)
     board, side = s["board"], s["side"]
     comp = next((c for c in d.get("components", []) if c["ref"] == ref), {})

@@ -193,6 +193,86 @@ try:
         pg.screenshot(path=str(out / "12-history-checks.png"))
         pg.click("button[data-tab=models]"); pg.wait_for_timeout(800)
         one_scroller(pg, "models")
+
+        # ---- an answer on the reference is looked at on every board of the design --------------
+        import json as _json, urllib.request as _rq
+
+        def call(path, body=None, raw=None):
+            data = raw if raw is not None else (_json.dumps(body).encode() if body is not None else None)
+            req = _rq.Request(f"http://localhost:{port}/{path}", data=data, method="POST" if data is not None else "GET",
+                              headers={} if raw is not None else {"Content-Type": "application/json"})
+            with _rq.urlopen(req, timeout=120) as r:
+                return _json.loads(r.read())
+
+        ref_uid = call("api/check/state")["references"][0]["uid"]
+        # another mapped board of the design (PTC 001, say), both sides lined up, set up through the API
+        call(f"api/history/{ref_uid}/new", {})
+        H2f, H2b = fx.camera("front", tilt_deg=-2, ppi=290), fx.camera("back", ppi=250, tilt_deg=1)
+        for side, Hm, refs in (("front", H2f, ["FIDT1", "FIDT2", "FIDT4", "FIDT3"]), ("back", H2b, ["FIDB2", "FIDB1", "FIDB3"])):
+            call(f"api/side/{side}/photo", raw=cv2.imencode(".jpg", fx.render(side, Hm, reversed_refs=("C5",)))[1].tobytes())
+            pts = {r: [float(v) for v in fx.to_px(Hm, [fids[r]])[0]] for r in refs}
+            st2 = call(f"api/side/{side}/align", {"points": pts})
+        call("api/history/" + st2["project"]["uid"] + "/info", {"serial": "PTC 001"})
+        other_uid = st2["project"]["uid"]
+        call(f"api/history/{ref_uid}/open", {})
+        pg.reload(); pg.wait_for_selector("#tab-files:not([hidden])")
+        # the reference, FRONT: D7 (a TVS diode, not in the check) clicked on the photo and answered GOOD
+        pg.click("button[data-tab=front]"); pg.wait_for_selector("#side-parts div[data-ref='D7']")
+        pg.wait_for_timeout(500)
+        pg.dispatch_event("#parts-svg polygon[data-ref='D7']", "click"); pg.wait_for_selector("#sel-part .ref")
+        assert pg.inner_text("#sel-part .ref") == "D7" and "NOT CHECKED" in pg.inner_text("#sel-part .head")
+        assert "checked on every" in pg.inner_text("#sel-part .carry"), pg.inner_text("#sel-part .carry")
+        assert "NS ON EVERY BOARD" in pg.inner_text("#sel-part [data-a=nsall]")      # on the reference NS is for every board
+        pg.click("#sel-part [data-a=good]"); pg.wait_for_selector("#side-parts div[data-ref='D7'] .chip.st-good")
+        assert "now be checked on every" in pg.inner_text("#msg"), pg.inner_text("#msg")
+        assert "This part is checked on every" in pg.inner_text("#sel-part .carry")
+        pg.screenshot(path=str(out / "13-reference-answer.png"))
+        # PTC 001, opened from Files: D7 is in its check, outlined in its status colour, new, and counted
+        pg.click("button[data-tab=files]"); pg.wait_for_selector(f"#boards [data-reopen='{other_uid}']")
+        pg.click(f"#boards [data-reopen='{other_uid}']"); pg.wait_for_function("document.querySelector('#msg').innerText.includes('New in the check')")
+        pg.click("button[data-tab=front]"); pg.wait_for_selector("#side-parts div[data-ref='D7'] .newtag")
+        assert pg.eval_on_selector("#side-parts div[data-ref='D7'] .chip", "c => c.classList.contains('st-in')")
+        assert pg.eval_on_selector("#parts-svg polygon[data-ref='D7']", "p => p.classList.contains('st-in')")
+        st = pg.evaluate("fetch('/api/viewer/status').then(r => r.json())")["parts"]
+        assert st["D7"]["st"] == "checked" and st["D7"]["new"] and st["D7"]["verdict"] == "correct", st["D7"]
+        n_in = int(pg.inner_text("#side-legend [data-stat=check] b"))
+        assert n_in == sum(1 for r, s in st.items() if s["st"] != "off" and r in pg.eval_on_selector_all("#side-parts div[data-ref]", "ds => ds.map(d => d.dataset.ref)"))
+        if not pg.is_visible("#sel-part .ref") or pg.inner_text("#sel-part .ref") != "D7":      # still chosen from the reference
+            pg.dispatch_event("#parts-svg polygon[data-ref='D7']", "click")
+        pg.wait_for_selector("#sel-part .newtag")
+        pg.wait_for_function("document.querySelector('#sel-part .opinions').innerText.includes('LOOKS RIGHT')")
+        pg.screenshot(path=str(out / "14-other-board-new-part.png"))
+        one_scroller(pg, "front, new part")
+        # and on Check a board: a new check of the front covers D7
+        call("api/check/start", {"reference": ref_uid, "serial": "REPAIR-18"})
+        res = call("api/check/side/front/photo", raw=cv2.imencode(".jpg", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+        d7 = next(r for r in res["check"]["sides"]["front"]["results"] if r["ref"] == "D7")
+        assert d7["status"] == "ok", d7
+
+        # ---- making PTC 001 the reference: review each difference first ---------------------------
+        pg.click("button[data-tab=map]"); pg.wait_for_selector("#map-ref")
+        pg.click("#map-ref"); pg.wait_for_selector("#tab-review:not([hidden])")
+        pg.wait_for_function("!document.querySelector('#rv-left').innerText.startsWith('COMPARING')", timeout=180000)
+        print("review:", pg.inner_text("#rv-sub"))
+        assert call("api/check/state")["references"][0]["uid"] == ref_uid      # the old one stays until finished
+        pg.wait_for_function("[...document.querySelectorAll('#rv-rows img')].every(i => i.complete && i.naturalWidth > 0)")
+        pg.screenshot(path=str(out / "15-review.png"))
+        one_scroller(pg, "review")
+        assert pg.is_visible("#rv-rows [data-rv=wrong][data-key='front/C5']"), pg.inner_text("#rv-rows")    # C5 is reversed on PTC 001
+        pg.click("#rv-rows [data-rv=wrong][data-key='front/C5']"); pg.wait_for_timeout(400)
+        if pg.is_enabled("#rv-approve"):
+            pg.click("#rv-approve"); pg.wait_for_timeout(400)
+        for _ in range(200):
+            b = pg.query_selector("#rv-rows [data-rv=accept]:not(.on)")
+            if not b:
+                break
+            b.click(); pg.wait_for_timeout(250)
+        pg.wait_for_function("!document.querySelector('#rv-finish').disabled")
+        pg.click("#rv-finish"); pg.wait_for_function("document.querySelector('#rv-left').innerText === 'DONE'")
+        refs = call("api/check/state")["references"]
+        assert [r["uid"] for r in refs] == [other_uid], refs
+        pg.screenshot(path=str(out / "16-review-done.png"))
+        pg.click("button[data-tab=history]"); pg.wait_for_selector("#hist-detail [data-review]")
         br.close()
 finally:
     srv.terminate()

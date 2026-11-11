@@ -248,6 +248,7 @@ function goTab(t) {
   if (tab === "history") loadHistory();
   if (tab === "check") loadCheck();
   if (tab === "models") loadModels();
+  if (tab === "review") loadReview();
   if (tab === "map" && S && S.project) bvOpen();
 }
 document.addEventListener("click", e => {
@@ -268,6 +269,7 @@ function render() {
   $("#tab-history").hidden = tab !== "history";
   $("#tab-check").hidden = tab !== "check";
   $("#tab-models").hidden = tab !== "models";
+  $("#tab-review").hidden = tab !== "review";
   $("#sub").textContent = S && S.design ? `Open: ${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}` : "ODB++  ·  BOM  ·  photo map";
   if (tab === "files") renderFiles();
   if (tab === "parts") renderParts();
@@ -362,7 +364,7 @@ async function projectAct(btn, busy, fn, done) {
 function reopen(uid, btn) {
   return projectAct(btn, "OPENING...", () => post(`api/history/${encodeURIComponent(uid)}/open`, {}),
     "Reopened the project as it was left.").then(() => S.project && S.project.uid === uid &&
-      say(`Opened ${S.project.board || S.name}${S.project.serial ? " " + S.project.serial : ""} as it was left.`));
+      say(`Opened ${S.project.board || S.name}${S.project.serial ? " " + S.project.serial : ""} as it was left.${S.messages && S.messages.length ? " " + S.messages.join(" ") : ""}`));
 }
 function newFrom(uid, btn) {
   return projectAct(btn, "STARTING...", () => post(`api/history/${encodeURIComponent(uid)}/new`, {}),
@@ -665,6 +667,9 @@ function renderSide(side) {
     res += `<div class="dim">Lined up${st.how ? ": " + esc(st.how) : ""}.${st.errors.length > 3 ? " Largest point error " + Math.max(...st.errors).toFixed(1) + " px." : ""}</div>`;
     for (const w of st.warnings) res += `<div class="warn">${esc(w)}</div>`;
   }
+  if (!cu && S.project && (S.project.replaced_reference || S.project.reference_change))
+    res += `<div class="warn">This board was the reference for checks. The reference as it was stays in use until you review the differences${st.aligned ? "" : " (line this photo up first)"}.
+      ${st.aligned ? `<button class="small accent" data-rvgo>REVIEW THE REFERENCE CHANGE</button>` : ""}</div>`;
   if (cu && cst && cst.aligned) res += `<div class="dim">Closeup lined up.</div>`;
   if (cu) res += `<div class="row"><button id="back-full">BACK TO THE FULL PHOTO</button></div>`;
   $("#align-result").innerHTML = res;
@@ -694,12 +699,31 @@ function renderSide(side) {
     $("#side-parts").innerHTML = shownRows(side).map(r => {
       const k = pstat(r.ref);
       return `<div data-ref="${esc(r.ref)}" class="${r.ref === sel ? "sel" : ""}" title="${esc((PS.parts[r.ref] || {}).why || r.reason || "")}"><span class="r">${esc(r.ref)}</span>
-        <span class="v grow ell">${esc(r.value || r.package || "")}${r.kind ? " · " + esc(KIND_NAMES[r.kind] || r.kind) : ""}</span>${chip(k)}${k === "off" ? `<button class="small" data-add="${esc(r.ref)}" title="Put it in the check (Look only)">+ ADD</button>` : ""}</div>`;
+        <span class="v grow ell">${esc(r.value || r.package || "")}${r.kind ? " · " + esc(KIND_NAMES[r.kind] || r.kind) : ""}</span>${newTag(r.ref)}${chip(k)}${k === "off" ? `<button class="small" data-add="${esc(r.ref)}" title="Put it in the check (Look only)">+ ADD</button>` : ""}</div>`;
     }).join("") || `<div class="dim">No parts match.</div>`;
   }
   renderSel(side);
   drawParts(side);
   drawMarks(side);
+}
+
+// a part put in the check on another board of the design since this one was last open (until answered here)
+const NEW_VERDICT = { wrong: " · LOOKS WRONG", unsure: " · NOT SURE" };
+function newTag(ref) {
+  const o = PS.parts[ref]; if (!o || !o.new) return "";
+  return `<span class="newtag" title="New since this board was last checked: answered on another board of the design${o.verdict_why ? ". The check here: " + esc(o.verdict_why) : ""}">NEW${NEW_VERDICT[o.verdict] || ""}</span>`;
+}
+// what happens on every board of the design, in plain words, for the selected part
+const designName = () => (S.group && S.group.name) || (S.project && S.project.board) || "";
+function carryLine(d, inCheck, ans) {
+  const g = esc(designName()), isRef = S.project && S.project.reference;
+  if (d && d.ns === "all") return `Not stuffed on every ${g} board: it isn't asked about on any of them.`;
+  if (!inCheck) return `Answer it (GOOD, BAD, MISSING or NS) and it will be checked on every ${g} board from now on.`;
+  let t = `This part is checked on every ${g} board.`;
+  if (isRef && ans === "good") t += " This reference's picture of it is the standard.";
+  if (isRef && (ans === "bad" || ans === "missing")) t += " The reference shows it wrong, so other boards are compared with good examples of it instead.";
+  if (isRef && ans === "ns") t += " Not stuffed on this reference only.";
+  return t;
 }
 
 // the outlines of every part on the side, coloured by status; in pick mode a click selects one
@@ -782,6 +806,9 @@ function renderSel(side) {
   const kind = (ok && d.kind) || row.kind;
   const what = [ok ? d.value : row.value, kind ? KIND_NAMES[kind] || kind : "not in the check", ok ? d.package : row.package, ok && d.description].filter(Boolean).map(esc).join(" · ");
   const reasons = Object.entries(Object.keys(PL.reasons).length ? PL.reasons : (S.reasons || {})).filter(([r]) => r !== "missing");
+  // on the reference, NS is for every board of the design unless said otherwise
+  const isRef = !!(S.project && S.project.reference), nsMain = isRef ? "nsall" : "ns", nsOther = isRef ? "nsone" : "nsall";
+  const nsOn = ok && (isRef ? d.ns === "all" : d.ns === "board");
   el.innerHTML = `<div class="head"><span class="ref">${esc(ref)}</span>${chip(k, "", "big solid")}<span class="grow"></span>
       <button class="small" data-a="prev" title="The part before in the list (key ↑)">‹</button><span class="dim" style="margin:0">${i >= 0 ? `${i + 1} of ${rows.length}` : ""}</span>
       <button class="small" data-a="next" title="The next part in the list (key ↓)">›</button><button class="small" data-a="close" title="Clear the selection (Esc)">✕</button></div>
@@ -797,15 +824,17 @@ function renderSel(side) {
       <button data-a="good" class="a-good ${ans === "good" ? "on" : ""}" title="It's right (key G)${inCheck ? "" : "; puts it in the check"}">GOOD</button>
       <button data-a="bad" class="a-bad ${ans === "bad" ? "on" : ""}" title="It's wrong: pick why (key B)">BAD${ans === "bad" && ok && d.taught && d.taught.reason ? ": " + esc((PL.reasons[d.taught.reason] || d.taught.reason).toUpperCase()) : ""}</button>
       <button data-a="missing" class="a-missing ${ans === "missing" ? "on" : ""}" title="It should be there but isn't: a fault (key M)">MISSING</button>
-      <button data-a="ns" class="a-ns ${ans === "ns" ? "on" : ""}" title="Not stuffed: left off this board on purpose, not a fault (key N)">NS</button>
+      <button data-a="${nsMain}" class="a-ns ${ans === "ns" ? "on" : ""}" title="${isRef ? "Not stuffed on every board of this design: this is the reference" : "Not stuffed: left off this board on purpose, not a fault"} (key N)">NS${isRef ? " ON EVERY BOARD" : ""}</button>
       ${ans ? `<button data-a="undo" title="Take the answer back">UNDO</button>` : ""}
       <details class="more"><summary>MORE</summary><div class="menu">
-        <button data-a="nsall" class="${ok && d.ns === "all" ? "on" : ""}">${ok && d.ns === "all" ? "NS ON EVERY BOARD ✓ (UNDO)" : "NS ON EVERY BOARD OF THIS DESIGN"}</button>
+        ${isRef ? `<button data-a="nsone" class="${ok && d.ns === "board" ? "on" : ""}">${ok && d.ns === "board" ? "NS ON THIS BOARD ONLY ✓ (UNDO)" : "NS ON THIS BOARD ONLY"}</button>`
+          : `<button data-a="nsall" class="${ok && d.ns === "all" ? "on" : ""}">${ok && d.ns === "all" ? "NS ON EVERY BOARD ✓ (UNDO)" : "NS ON EVERY BOARD OF THIS DESIGN"}</button>`}
         ${ok && (d.extra || !d.in_check) ? `<button data-a="wait" class="${d.wait ? "on" : ""}">${d.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO"}</button>` : ""}
         <button data-a="map">SHOW ON THE MAP</button></div></details>
     </div>
     ${ui.badPick ? `<div class="answers"><span class="lab">WHY BAD?</span>${reasons.map(([r, t]) => `<button class="small a-bad" data-reason="${esc(r)}">${esc(t.toUpperCase())}</button>`).join("")}
       <input class="note" id="sel-note" placeholder="Note (optional)" value="${esc(ok && d.note || "")}"></div>` : ""}
+    <div class="carry">${o.new ? `<span class="newtag">NEW SINCE LAST CHECK</span> ` : ""}${carryLine(ok ? d : null, inCheck, ans)}</div>
     <div class="addrow">${inCheck
       ? `<span class="dim grow">${ok && d.extra ? "Added one by one" : "In the check"}${kind ? " as " + esc(KIND_NAMES[kind] || kind) : ""}</span><button class="small" data-a="remove">TAKE OUT</button>
         <button class="small accent" data-a="todo" title="The next part in the check with no answer (key Space)">NEXT NOT ANSWERED ›</button>`
@@ -838,11 +867,12 @@ async function selDo(side, a, extra = {}) {
     if (a === "good" || a === "bad" || a === "missing") {
       const reason = a === "missing" ? "missing" : extra.reason || "", note = $("#sel-note") ? $("#sel-note").value : "";
       SEL.d = await post("api/part/teach", { src, ref, answer: a === "good" ? "good" : "bad", reason, note, kind: k === "off" ? kind : null });
-      done = `${ref}: ${a === "good" ? "GOOD" : a === "missing" ? "MISSING" : "BAD"}, kept as a learned example${k === "off" ? ", and put in the check" : ""}.`;
-    } else if (a === "ns" || a === "nsall") {
+      done = `${ref}: ${a === "good" ? "GOOD" : a === "missing" ? "MISSING" : "BAD"}, kept as a learned example. This part will now be checked on every ${designName()} board.`;
+    } else if (a === "ns" || a === "nsall" || a === "nsone") {
       const every = a === "nsall", on = every ? !(d && d.ns === "all") : !(d && d.ns === "board");
       SEL.d = await post("api/part/ns", { src, ref, on, all: every });
-      done = !on ? `${ref}: NS undone, it's checked again.` : every ? `${ref}: not stuffed on every board of this design.` : `${ref}: not stuffed on this board.`;
+      done = !on ? `${ref}: NS undone, it's checked again.` : every ? `${ref}: not stuffed on every ${designName()} board.`
+        : `${ref}: not stuffed on this board. It will be checked on every other ${designName()} board.`;
     } else if (a === "undo") {
       if (d && d.ns) SEL.d = await post("api/part/ns", { src, ref, on: false });
       else if (d && d.taught) await post(`api/check/learned/${encodeURIComponent(d.board)}/${side}/delete`, { id: d.taught.id });
@@ -876,7 +906,8 @@ $("#sel-part").addEventListener("click", e => {
 document.addEventListener("keydown", e => {
   if ((tab !== "front" && tab !== "back") || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, select, textarea")) return;
   const side = tab, k = e.key, on = !!ui.look[side];
-  const keys = { ArrowDown: "next", ArrowRight: "next", ArrowUp: "prev", ArrowLeft: "prev", " ": "todo", Escape: "close", g: "good", b: "bad", m: "missing", n: "ns", a: "add" };
+  const keys = { ArrowDown: "next", ArrowRight: "next", ArrowUp: "prev", ArrowLeft: "prev", " ": "todo", Escape: "close", g: "good", b: "bad", m: "missing",
+    n: S.project && S.project.reference ? "nsall" : "ns", a: "add" };
   if (k === "0") return ZS.fit();
   if (!keys[k] && !keys[k.toLowerCase()]) return;
   const a = keys[k] || keys[k.toLowerCase()];
@@ -1118,6 +1149,7 @@ async function showPart(el, src, ref, after) {
       ${d.reference && !d.verdict.startsWith("ref") ? `<figure><img src="${partCrop(src, d.ref, "reference", v)}" alt="">reference</figure>` : ""}</div>
     ${modelLine(d)}
     <div class="dim">Learned so far: ${d.good} good, ${d.bad} bad${d.pending ? " · waiting for a new photo to be taught on" : ""}${ans ? ` · this board answered ${ans === "correct" ? "GOOD" : "BAD"}` : ""}</div>
+    <div class="carry">${d.ns === "all" ? "Not stuffed on every board of this design." : d.in_check ? "This part is checked on every board of this design." : "Answer it and it will be checked on every board of this design from now on."}</div>
     <div class="answers">
       <button data-t="good" class="a-good ${a === "good" ? "on" : ""}">GOOD</button><button data-t="bad" class="a-bad ${a === "bad" ? "on" : ""}">BAD</button>
       <button data-t="missing" class="a-missing ${a === "missing" ? "on" : ""}" title="It should be there but isn't: a fault, kept as a bad example">MISSING</button>
@@ -1168,11 +1200,14 @@ function renderMap() {
   }
   html += `</div>`;
   $("#map-summary").innerHTML = html;
-  const isRef = S.project && S.project.reference;
-  $("#map-ref").textContent = isRef ? "THE REFERENCE FOR CHECKS ✓" : "USE AS THE REFERENCE FOR CHECKS";
-  $("#map-ref").classList.toggle("accent", !isRef); $("#map-ref").classList.toggle("on", !!isRef);
-  $("#map-ref-note").textContent = isRef ? `Other ${S.project.board} boards are checked against this one. Press again to stop.`
-    : "Once this board has been checked by hand, make it the reference for other boards of this type.";
+  const isRef = S.project && S.project.reference, rv = S.project && S.project.reference_change, swap = S.project && S.project.replaced_reference;
+  $("#map-ref").textContent = rv ? `REVIEW THE REFERENCE CHANGE${rv.left ? ` (${rv.left} LEFT)` : ""}` : swap ? "REVIEW THE NEW REFERENCE PHOTO"
+    : isRef ? "THE REFERENCE FOR CHECKS ✓" : "USE AS THE REFERENCE FOR CHECKS";
+  $("#map-ref").classList.toggle("accent", !isRef); $("#map-ref").classList.toggle("on", !!isRef && !rv);
+  $("#map-ref-note").textContent = rv ? `This board will become the reference once every difference from the one in use (${rv.old_label}) has a decision. Until then the old one is used.`
+    : swap ? "This board's photo changed while it was the reference. The reference as it was stays in use until you review the differences."
+    : isRef ? `Other ${S.project.board} boards are checked against this one. Press again to stop.`
+    : "Once this board has been checked by hand, make it the reference for other boards of this type. If there is one already, you review the differences first.";
   $("#map-folder").textContent = `Everything for this board is kept with the project in the app's data folder under projects/${S.project ? S.project.uid : ""}/ (the ODB++ and BOM, design.json, parts_map.csv, and each side's reference.jpg, alignment.json, parts.json and map.jpg), and listed on the History tab.`;
   renderViewer();
   $("#unchecked tbody").innerHTML = rows.map(r => `<tr class="click" data-bvref="${esc(r.ref)}"><td>${r.side}</td><td><b>${esc(r.ref)}</b></td><td>${KIND_NAMES[r.kind]}</td><td>${esc(r.value)}</td><td>${chip("cant")} <span class="dim">${esc(r.reason)}</span></td></tr>`).join("")
@@ -1180,15 +1215,95 @@ function renderMap() {
 }
 
 $("#unchecked").addEventListener("click", e => { const r = e.target.closest("[data-bvref]"); if (r) bvSelect(r.dataset.bvref, null, true); });
+document.addEventListener("click", e => { if (e.target.closest("[data-rvgo]")) $("#map-ref").click(); });
 $("#map-ref").addEventListener("click", async () => {
   if (!S || !S.project) return;
   try {
+    if (S.project.reference_change) return openReview(S.project.reference_change.id);
+    if (S.project.replaced_reference) return reviewStarted(await post("api/refchange/start", { uid: S.project.uid }));
     const on = !S.project.reference;
-    await post(`api/history/${encodeURIComponent(S.project.uid)}/reference`, { on });
+    const r = await post(`api/history/${encodeURIComponent(S.project.uid)}/reference`, { on });
+    if (r.review) return reviewStarted(r);
     S.project.reference = on; recentAt = 0;
     say(on ? "This board is now the reference. Check other boards of this type on the Check a board tab." : "No longer the reference.");
     render();
   } catch (e) { say(e.message, true); }
+});
+
+// ---- reviewing a change of reference (refchange.py) ------------------------------------------
+// The reference is what right looks like, so it never changes silently: every part that differs from
+// the reference in use gets a decision, and the old one is used until they all have one.
+const RV = { id: null, c: null, filter: "todo", timer: null };
+function reviewStarted(r) {
+  if (!r.review) { refreshState(); return say("This board is now the reference for checks."); }
+  say("This design has a reference already. Each part that differs between the two is listed for you to decide; the old reference is used until you finish.");
+  openReview(r.review.id);
+}
+function openReview(id) { RV.id = id; RV.filter = "todo"; goTab("review"); }
+async function loadReview() {
+  clearTimeout(RV.timer);
+  if (!RV.id) return;
+  try { RV.c = await api(`api/refchange/${encodeURIComponent(RV.id)}`); } catch (e) { return say(e.message, true); }
+  renderReview();
+  if (RV.c.building && tab === "review") RV.timer = setTimeout(loadReview, 1500);
+}
+const rvCrop = (c, r, which) => `api/refchange/${encodeURIComponent(c.id)}/crop?key=${encodeURIComponent(r.key)}&which=${which}`;
+function renderReview() {
+  const c = RV.c; if (!c) return;
+  const open = c.status === "open", dec = c.decisions || {};
+  $("#rv-title").textContent = `REVIEW REFERENCE CHANGE  ·  ${c.board}: ${c.old_label} → ${c.new_label}`;
+  $("#rv-left").textContent = c.building ? `COMPARING ${c.progress ? c.progress.done + " OF " + c.progress.total : "..."}`
+    : open ? (c.left ? `${c.left} LEFT` : "ALL DECIDED") : c.status.toUpperCase();
+  $("#rv-left").className = "badge " + (open && !c.left && !c.building ? "PASS" : open ? "OPEN" : "");
+  $("#rv-sub").textContent = c.building ? "Comparing every part of the new reference with the one in use, and asking the models about both..."
+    : c.error ? c.error
+    : `${c.same_count} part(s) look the same and switch over without questions. ${plural(c.differences, "difference")} to decide.`
+      + (open ? ` ${c.old_label} stays the reference until every one has a decision.` : c.summary ? " " + c.summary : "");
+  $("#rv-finish").disabled = !open || !!c.left || c.building;
+  $("#rv-later").hidden = !open; $("#rv-cancel").hidden = !open; $("#rv-undo").hidden = c.status !== "done"; $("#rv-approve").hidden = !open;
+  const kinds = {};
+  c.rows.forEach(r => r.kinds.forEach(k => kinds[k] = (kinds[k] || 0) + 1));
+  const F = { todo: [`TO DECIDE (${c.left})`, r => !dec[r.key]], decided: [`DECIDED (${c.rows.length - c.left})`, r => !!dec[r.key]], all: [`ALL (${c.rows.length})`, () => true] };
+  Object.entries(kinds).forEach(([k, n]) => F[k] = [`${c.kinds_text[k].toUpperCase()} (${n})`, r => r.kinds.includes(k)]);
+  if (!F[RV.filter]) RV.filter = "all";
+  $("#rv-filter").innerHTML = Object.entries(F).map(([k, [t]]) => `<button data-f="${k}" class="${RV.filter === k ? "on" : ""}">${esc(t)}</button>`).join("");
+  const rows = c.rows.filter(F[RV.filter][1]);
+  $("#rv-rows").innerHTML = rows.map(r => { const d = dec[r.key]; return `<div class="rvrow ${d ? "decided" : ""}">
+      <figure><img loading="lazy" src="${rvCrop(c, r, "old")}" alt="">OLD · ${esc(c.old_label)}</figure>
+      <figure><img loading="lazy" src="${rvCrop(c, r, "new")}" alt="">NEW · ${esc(c.new_label)}</figure>
+      <div><div class="row tight"><b style="font-size:17px">${esc(r.ref)}</b><span class="dim ell" style="margin:0">${r.side} · ${esc(r.kind ? KIND_NAMES[r.kind] || r.kind : "not in the check")} ${esc(r.value)}</span></div>
+        <div class="chips">${r.kinds.map(k => `<span class="chip st-in">${esc(c.kinds_text[k].toUpperCase())}</span>`).join("")}</div>
+        <div class="dim">${esc(r.why)}</div>
+        ${r.model_old || r.model_new ? `<div class="dim">Models think: old ${esc(r.model_old || "–")} · new ${esc(r.model_new || "–")}</div>` : ""}
+        <div class="answers">${Object.entries(c.choices).map(([k, t]) => `<button data-rv="${k}" data-key="${esc(r.key)}" class="${k === "accept" ? "a-good" : k === "wrong" ? "a-bad" : k === "ns" ? "a-ns" : ""} ${d && d.choice === k ? "on" : ""}" ${open ? "" : "disabled"}>${esc(t)}</button>`).join("")}</div></div></div>`; }).join("")
+    || `<p class="dim" style="margin:12px">${c.building ? "Comparing..." : c.rows.length ? "Nothing in this list." : "No differences: finish to switch over."}</p>`;
+}
+$("#rv-filter").addEventListener("click", e => { const b = e.target.closest("[data-f]"); if (b) { RV.filter = b.dataset.f; renderReview(); } });
+$("#rv-rows").addEventListener("click", async e => {
+  const b = e.target.closest("[data-rv]"); if (!b || b.disabled) return;
+  const d = (RV.c.decisions || {})[b.dataset.key];
+  try { RV.c = await post(`api/refchange/${encodeURIComponent(RV.id)}/decide`, { keys: [b.dataset.key], choice: d && d.choice === b.dataset.rv ? null : b.dataset.rv }); renderReview(); }
+  catch (err) { say(err.message, true); }
+});
+$("#rv-approve").addEventListener("click", async () => {
+  try { const n = RV.c.left; RV.c = await post(`api/refchange/${encodeURIComponent(RV.id)}/approve`, {}); renderReview(); say(`${n - RV.c.left} part(s) that match accepted.`); }
+  catch (e) { say(e.message, true); }
+});
+async function rvAfter(r, text) {
+  RV.c = r; S = await api("api/state"); S._r = Date.now(); recentAt = 0; renderReview(); say(text);
+}
+$("#rv-finish").addEventListener("click", async () => {
+  try { const r = await post(`api/refchange/${encodeURIComponent(RV.id)}/finish`, {}); await rvAfter(r, `${r.new_label} is now the reference for checks. ${r.summary || ""}`); }
+  catch (e) { say(e.message, true); }
+});
+$("#rv-later").addEventListener("click", () => { say("Saved. The old reference stays in use until you finish; open this again from the Map tab or History."); goTab(S && S.design ? "map" : "history"); });
+$("#rv-cancel").addEventListener("click", async () => {
+  if (!confirm("Cancel this change? The old reference stays in use and these decisions are kept in the history only.")) return;
+  try { await rvAfter(await post(`api/refchange/${encodeURIComponent(RV.id)}/cancel`, {}), "Cancelled. The old reference stays."); } catch (e) { say(e.message, true); }
+});
+$("#rv-undo").addEventListener("click", async () => {
+  if (!confirm("Put the old reference back? What these decisions added (examples, NS, parts marked wrong) is taken away again.")) return;
+  try { await rvAfter(await post(`api/refchange/${encodeURIComponent(RV.id)}/undo`, {}), "Undone: the old reference is back."); } catch (e) { say(e.message, true); }
 });
 
 // ---- 5 map: the board viewer ----------------------------------------------------------------
@@ -1708,6 +1823,7 @@ function ckChip(r) {
   if (r.status === "ns") return chip("ns");
   if (r.missed) return `<span class="chip st-bad">MISSED BY THE CHECK</span>`;
   if (r.new) return `<span class="chip st-in">NEW PART, TEACH ME</span>`;
+  if (r.since) return `<span class="chip st-in" title="Put in the check (answered on another board of the design) after this board was checked">NEW SINCE LAST CHECK</span>`;
   return `<span class="chip ${r.status === "check" ? "st-in" : "st-bad"}" title="Not answered yet">${esc(STATUS_TEXT[r.status].toUpperCase())}</span>`;
 }
 function ckLegend(s) {
@@ -1845,7 +1961,7 @@ async function showProject(uid) {
     <div class="row">
       ${isOpen ? `<button data-goto="files" class="accent">OPEN NOW</button>` : `<button class="accent" data-reopen="${esc(uid)}">REOPEN</button>`}
       <button data-newfrom="${esc(uid)}">NEW BOARD, SAME DESIGN</button>
-      <button id="hd-ref" class="${d.reference ? "on" : ""}">${d.reference ? "REFERENCE FOR CHECKS ✓" : "USE AS REFERENCE"}</button>
+      <button id="hd-ref" class="${d.reference ? "on" : ""}">${d.reference ? "REFERENCE FOR CHECKS ✓" : d.replaced_reference ? "REVIEW THE NEW REFERENCE PHOTO" : "USE AS REFERENCE"}</button>
       ${csv ? `<a class="btn" href="${fileUrl(uid, csv.path, `?download=${encodeURIComponent(d.board + (d.serial ? "_" + d.serial : "") + "_parts_map.csv")}`)}">DOWNLOAD CSV</a>` : ""}
     </div>
     <div class="kv">
@@ -1859,6 +1975,10 @@ async function showProject(uid) {
       <b>Closeups</b><span>${d.closeups}</span>
       <b>Folder</b><span class="mono">${esc(d.folder)}</span>
     </div>
+    ${d.reference_changes && d.reference_changes.length ? `<h3>REFERENCE CHANGES</h3>
+      <div class="list">${d.reference_changes.map(c => `<div><span class="grow">${esc(c.created.slice(0, 16))} · ${esc(c.old_label)} → ${esc(c.new_label)}
+        <span class="dim">${c.status === "open" ? `waiting: ${c.left} of ${c.differences} left` : c.status === "done" ? `done ${esc((c.finished || "").slice(0, 16))}` : esc(c.status)} · ${c.same_count} the same</span></span>
+        <button class="small ${c.status === "open" ? "accent" : ""}" data-review="${esc(c.id)}">${c.status === "open" ? "REVIEW" : "SEE"}</button></div>`).join("")}</div>` : ""}
     <h3>SERIAL AND NOTES</h3>
     <div class="grid2">
       <span class="lab">SERIAL</span><input id="hd-serial" value="${esc(d.serial)}" placeholder="Serial number or label">
@@ -1877,9 +1997,12 @@ async function showProject(uid) {
       ${d.files.map(f => `<tr><td><a href="${fileUrl(uid, f.path, `?download=${encodeURIComponent(named(f).split("/").pop())}`)}">${esc(f.path)}</a>${named(f) !== f.path ? ` <span class="dim">${esc(named(f))}</span>` : ""}</td><td>${esc(f.kind)}${f.side ? " · " + f.side : ""}</td><td>${kb(f.bytes)}</td><td>${esc(f.modified.slice(0, 16))}</td></tr>`).join("")}</tbody></table></div>
     <h3>LOG</h3>
     <div class="list log">${d.log.map(e => `<div><span class="dim">${esc(e.at)}</span><span class="grow">${esc(e.what)}</span></div>`).join("") || `<div class="dim">Nothing logged.</div>`}</div>`;
+  $$("#hist-detail [data-review]").forEach(b => b.addEventListener("click", () => openReview(b.dataset.review)));
   $("#hd-ref").addEventListener("click", async () => {
     try {
-      await post(`api/history/${encodeURIComponent(uid)}/reference`, { on: !d.reference });
+      if (d.replaced_reference) return reviewStarted(await post("api/refchange/start", { uid }));
+      const r = await post(`api/history/${encodeURIComponent(uid)}/reference`, { on: !d.reference });
+      if (r.review) return reviewStarted(r);
       if (isOpen) S.project.reference = !d.reference;
       say(!d.reference ? "Now the reference for checking other boards of this type." : "No longer the reference.");
       loadHistory();
@@ -1938,8 +2061,10 @@ function renderCheck() {
     $("#ck-flagged").innerHTML = s.aligned ? (fl ? `<h3>FLAGGED: LOOK AT EACH ONE</h3>${fl}` : `<p class="st-ok">Nothing flagged on the ${CK.side}.</p>`) : "";
     const ok = (s.results || []).filter(r => r.status === "ok" && !r.missed);
     const byLearning = ok.filter(r => r.learned === "good").map(r => r.ref), ns = (s.results || []).filter(r => r.status === "ns");
+    const since = ok.filter(r => r.since).map(r => r.ref);
     $("#ck-ok").innerHTML = s.aligned ? `<h3>GOOD: THE RIGHT WAY ROUND (${ok.length})</h3><p class="dim">${esc(ok.map(r => r.ref).join(", ") || "none")}</p>` +
       (byLearning.length ? `<p class="dim">Passed because they look like parts a tester confirmed: ${esc(byLearning.join(", "))}.</p>` : "") +
+      (since.length ? `<p class="dim"><span class="newtag">NEW SINCE LAST CHECK</span> ${esc(since.join(", "))}: put in the check after this board was checked, compared now.</p>` : "") +
       (ok.length ? `<h3>DID THE CHECK MISS ONE?</h3><p class="dim">If one of these is wrong, flag it: it's kept as a bad example, and the reference's look of that part is no longer trusted.</p>
         <div class="row"><select id="ck-miss-ref">${ok.map(r => `<option>${esc(r.ref)}</option>`).join("")}</select>
         ${reasonSelect("reason").replace("<select ", `<select id="ck-miss-reason" `)}<input id="ck-miss-note" class="note" placeholder="Note (kept with the example)"><button id="ck-miss" class="a-bad">FLAG AS BAD</button></div>` : "") +

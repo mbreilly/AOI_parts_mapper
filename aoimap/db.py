@@ -33,8 +33,8 @@ except ImportError:   # the app still runs, without the database
     pymysql = None
 
 DEFAULT_CONFIG = Path.home() / ".config" / "aoimap" / "db.cnf"
-SCHEMA_VERSION = 5      # 2: learned examples, board choices and parts added by hand; 3: projects above the tabs;
-                        # 4: parts not stuffed (NS); 5: the trained models' metrics
+SCHEMA_VERSION = 6      # 2: learned examples, board choices and parts added by hand; 3: projects above the tabs;
+                        # 4: parts not stuffed (NS); 5: the trained models' metrics; 6: reference changes
 
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS aoi_schema (version INT NOT NULL) ENGINE=InnoDB""",
@@ -198,6 +198,32 @@ SCHEMA = [
         metrics JSON,
         PRIMARY KEY (board, job)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    # a change of the reference a design is checked against, and the decision for each difference
+    """CREATE TABLE IF NOT EXISTS aoi_reference_changes (
+        id VARCHAR(40) NOT NULL PRIMARY KEY,
+        board VARCHAR(128) NOT NULL,
+        old_uid VARCHAR(80) NOT NULL,
+        new_uid VARCHAR(80) NOT NULL,
+        trigger_kind VARCHAR(16) NOT NULL DEFAULT '',
+        status VARCHAR(16) NOT NULL,
+        parts_same INT NOT NULL DEFAULT 0,
+        differences INT NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL,
+        finished_at DATETIME NULL,
+        undone_at DATETIME NULL,
+        summary TEXT,
+        KEY board (board)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS aoi_reference_change_rows (
+        change_id VARCHAR(40) NOT NULL,
+        side VARCHAR(8) NOT NULL,
+        ref VARCHAR(64) NOT NULL,
+        why TEXT,
+        kinds VARCHAR(255) NOT NULL DEFAULT '',
+        choice VARCHAR(16) NOT NULL DEFAULT '',
+        decided_at DATETIME NULL,
+        PRIMARY KEY (change_id, side, ref)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
     """CREATE TABLE IF NOT EXISTS aoi_group_boards (
         group_id VARCHAR(80) NOT NULL,
         board VARCHAR(128) NOT NULL,
@@ -338,6 +364,37 @@ class History:
     def changed_learned(self, board: str, side: str):
         self.changed(f"learned:{side}:{board}")
 
+    def changed_refchange(self, cid: str):
+        self.changed("refchange:" + cid)
+
+    def write_refchange(self, cid: str):
+        """A reference change (refchange.py) and the decision for each difference."""
+        from . import refchange as rc
+        try:
+            c = rc.load(self.data, cid)
+        except ValueError:
+            return False
+
+        def go(cur):
+            cur.execute("""INSERT INTO aoi_reference_changes (id, board, old_uid, new_uid, trigger_kind, status, parts_same,
+                             differences, created_at, finished_at, undone_at, summary)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE status=VALUES(status), parts_same=VALUES(parts_same),
+                             differences=VALUES(differences), finished_at=VALUES(finished_at), undone_at=VALUES(undone_at),
+                             summary=VALUES(summary)""",
+                        (cid, c["board"], c["old"], c["new"], c.get("trigger", ""), c["status"],
+                         sum(len(v) for v in c.get("same", {}).values()), len(c.get("rows", [])), c["created"],
+                         c.get("finished") or None, c.get("undone") or None, c.get("summary", "")))
+            cur.execute("DELETE FROM aoi_reference_change_rows WHERE change_id=%s", (cid,))
+            rows = [(cid, r["side"], r["ref"][:64], r.get("why", ""), ",".join(r.get("kinds", []))[:255],
+                     (c["decisions"].get(r["key"]) or {}).get("choice", ""), (c["decisions"].get(r["key"]) or {}).get("at"))
+                    for r in c.get("rows", [])]
+            if rows:
+                cur.executemany("""INSERT INTO aoi_reference_change_rows (change_id, side, ref, why, kinds, choice, decided_at)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s)""", rows)
+            return True
+        return self._run(go)
+
     def changed_groups(self):
         self.changed("groups:")
 
@@ -364,6 +421,9 @@ class History:
         for f in sorted((self.data / "models").glob("*/metrics.json")):
             self.write_models((pj._read_json(f, {}) or {}).get("board") or f.parent.name)
         self.write_groups()
+        from . import refchange as rc
+        for cid in rc.ids(self.data):
+            self.write_refchange(cid)
 
     def changed_models(self, board: str):
         self.changed("models:" + board)
@@ -573,6 +633,8 @@ class History:
             return self.write_learned(board, side)
         if uid.startswith("models:"):
             return self.write_models(uid[7:])
+        if uid.startswith("refchange:"):
+            return self.write_refchange(uid[10:])
         try:
             p = pj.load(self.data, uid)
             s = pj.summary(self.data, uid)
@@ -680,6 +742,9 @@ class History:
         out["unchecked"] = [r for r in s["rows"] if not r["checkable"]]
         out["folder"] = str(pj.folder(self.data, uid).resolve())
         out["in_db"] = self._run(lambda c: (c.execute("SELECT 1 FROM aoi_projects WHERE uid=%s", (uid,)), bool(c.fetchone()))[1])
+        from . import refchange as rc
+        out["reference_changes"] = [c for c in rc.changes(self.data, p["board"]) if uid in (c["old"], c["new"])]
+        out["replaced_reference"] = p.get("replaced_reference", "") if not p.get("reference") else ""
         return out
 
     def info(self) -> dict:

@@ -168,6 +168,30 @@ This is a quick look before work starts on a board (say, before a repair), not a
   answered on at least one side, and **OPEN** until then. Parts the reference needed a closeup
   for, or that were too small or hidden, are listed to look at by eye.
 
+**An answer is looked at on every board of the design.** Answering a part GOOD, BAD, MISSING or NS on any
+board's photo (Front, Back or Check a board) puts it in the check for the whole design (by its look, unless it is
+polarised) and keeps the answer as a learned example; only **NS on every board** leaves it out. What is in the check
+is kept per design (`boards/<design>/profile.json`), so every board follows it: a mapped board opened later shows
+the part in its check, marked **NEW** (with what the check makes of it there) until it is answered on that board, and
+a check opened again compares the parts added since it was done and marks them **new since last check**, keeping
+the answers given before. On the reference's own photo the answer says what right looks like: GOOD makes the
+reference's look the standard; BAD or MISSING says the reference shows it wrong, so later boards are compared with
+good examples instead and aren't passed for matching the reference; NS there is offered for every board. The
+selected-part panel says in one line what will happen.
+
+**Changing the reference asks first.** Making another board the reference (Map tab or History), or replacing or
+lining up again the reference board's own photo, opens **Review reference change**: the new reference is compared
+part by part with the one in use (every part in the check, answered or learned, both sides, with the models'
+opinion of both). Parts that look the same switch over without a question; each difference is a row with the old and
+new crops side by side and **ACCEPT NEW**, **KEEP OLD** (the old crop is kept as a good example), **MARK NEW AS WRONG**
+(a bad example, and the new reference isn't trusted for it) or **NS ON EVERY BOARD**, with filters and **APPROVE ALL
+THAT MATCH** (rows whose only difference is their look and that the models see there and the same way round on both).
+The old reference stays in use until every row has a decision (**SAVE AND FINISH LATER** keeps them). When the
+reference's own photo is replaced, the reference as it was is first copied to a project of its own, which stays in
+use until the review is finished. A finished change can be undone. Changes are kept in
+`<data>/reference_changes/<id>.json`, listed with the project in History, logged in both projects, and copied to
+the tables `aoi_reference_changes` and `aoi_reference_change_rows`.
+
 Each check is kept in `<data>/checks/<date>-<time>-<board>/` (`check.json`, and for each side
 `photo.jpg`, `aligned.jpg` and `result.jpg`), and in the database tables `aoi_checks` and
 `aoi_check_parts`. The History tab lists checks under **Checks**.

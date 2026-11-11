@@ -39,6 +39,8 @@ DEFAULT_PROFILE = {
 
 
 slug = pj.slug
+# the choices of what to check: the same on every board of a design (kept in the board profile)
+DESIGN_KEYS = ("kinds", "hidden", "extra")
 
 
 def _write_json(path: Path, obj):
@@ -111,17 +113,43 @@ class Board:
         self.project, self.name = p, p["board"]
         saved = _read_json(d / "profile.json") or _read_json(self._profile_path(self.name), {})
         self.profile = {**json.loads(json.dumps(DEFAULT_PROFILE)), **saved}
+        # what to check is the design's: parts put in the check (or answered) on any board of it since
+        # this one was last open are checked here too
+        shared = _read_json(self._profile_path(self.name), {}) or {}
+        pulled = any(k in shared and shared[k] != self.profile.get(k) for k in DESIGN_KEYS)
+        for k in DESIGN_KEYS:
+            if k in shared:
+                self.profile[k] = json.loads(json.dumps(shared[k]))
+        before = {q["ref"] for q in (_read_json(d / "design.json", {}) or {}).get("parts", [])}
         self.odb_path, self.bom_path, self.odb = odbs[0], boms[0], None
         self._odb_filename, self._bom_filename = p.get("odb_file") or None, p.get("bom_file") or None
         self.messages = []
         self.sides = {}
         self._quiet = True
         try:
+            if pulled:
+                _write_json(d / "profile.json", self.profile)
             self._load_design()
             for side in ("front", "back"):
                 self._load_side(side)
         finally:
             self._quiet = False
+        if pulled:
+            self._note_new(before)
+
+    def _note_new(self, before: set):
+        """Parts that joined the check from the design's choices while this board was put away: logged,
+        and kept as new since this board was last checked until they're answered on it."""
+        added = sorted({q["ref"] for q in self.design["parts"]} - before) if before else []
+        p = self.project
+        if not added:
+            return
+        new = p.setdefault("new_in_check", {})
+        for ref in added:
+            new.setdefault(ref, pj.now()[:16])
+        self.messages.append(f"New in the check since this board was last open: {', '.join(added[:12])}"
+                             + (" ..." if len(added) > 12 else "") + " (put in the check on another board of this design).")
+        self._touch(f"Put in the check from the design's choices: {', '.join(added)}")
 
     def close(self):
         """Nothing open, as when the app starts: the next ODB++ and BOM loaded start a new board."""
@@ -264,7 +292,7 @@ class Board:
             shutil.copy(self.bom_path, src / ("bom" + self.bom_path.suffix))
             self.odb_path = src / ("odb" + "".join(self.odb_path.suffixes))
             self.bom_path = src / ("bom" + self.bom_path.suffix)
-            self.save_profile()
+            self.save_profile(design=True)
             self._touch(f"Loaded ODB++ {self.project['odb_file']} and BOM {self.project['bom_file']}: "
                         f"{len(self.design['parts'])} polarised parts")
 
@@ -283,7 +311,15 @@ class Board:
             if self.sides[side].get("mapping"):
                 self._place(side)
 
-    def save_profile(self):
+    def save_profile(self, design: bool = False):
+        """Keeps the choices with the project and as the board design's. What to check (DESIGN_KEYS) is
+        changed on the design only when design is True (a change of what to check made here), so a
+        board open here can't put back an older list that another board's answers have added to."""
+        shared = _read_json(self._profile_path(self.name), None)
+        if shared is not None and not design:
+            for k in DESIGN_KEYS:
+                if k in shared:
+                    self.profile[k] = shared[k]
         _write_json(self.dir / "profile.json", self.profile)
         _write_json(self._profile_path(self.name), self.profile)
         if self.on_profile:
@@ -301,6 +337,7 @@ class Board:
         if kind and kind not in bomlib.KINDS:
             raise ValueError(f"Unknown kind {kind}.")
         if mine:
+            self._pull_design()
             prof = self.profile
             known = {p.ref for p in self.odb.parts} - set(self.odb.fiducials)
         else:
@@ -327,7 +364,7 @@ class Board:
             what = f"{ref} added to the check as {bomlib.KINDS[e['kind']]}" + (", waiting for a photo to be taught on" if e.get("wait") else "")
         if mine:
             self.rebuild()
-            self.save_profile()
+            self.save_profile(design=True)
             self._touch(what)
         else:
             _write_json(self._profile_path(board), prof)
@@ -335,6 +372,13 @@ class Board:
                 self.on_profile(board)
         self._sync_references(board, {"extra": extra}, what)
         return extra
+
+    def _pull_design(self):
+        """The design's latest choices of what to check, before changing them here."""
+        shared = _read_json(self._profile_path(self.name), None) if self.name else None
+        for k in DESIGN_KEYS:
+            if shared and k in shared:
+                self.profile[k] = json.loads(json.dumps(shared[k]))
 
     def _references(self, board):
         from .check import references
@@ -360,23 +404,42 @@ class Board:
         """Keeps a part on any lined-up photo of a board as a good or bad example (see teach.py). A
         part that isn't in the check yet is added to it, as kind (by default "check its look")."""
         from . import teach as tl
+        from .check import set_reference_wrong
         s = tl.source(self.data, src)
         ex_id = tl.add(self.data, src, ref, label, reason, note)
-        if not any(p["ref"] == ref for p in tl.design_for(self.data, s["design"])["parts"]):
-            self.set_extra(ref, kind or "look", board=s["board"])
+        self._into_check(s, ref, kind)
         what = f"Taught {s['side']} {ref} as {'GOOD' if label == 'good' else 'BAD'}" + \
             (f" ({'; '.join(v for v in (REASONS.get(reason, ''), note) if v)})" if reason or note else "") + f" from {s['label']}"
         if s["kind"] == "project":
             p = self.project if self.project and self.project["uid"] == s["uid"] else pj.load(self.data, s["uid"])
+            if p.get("reference"):
+                # on the reference's photo the answer says what right looks like: GOOD, its look is the
+                # standard; BAD or MISSING, it shows the part wrong, so later boards aren't passed for
+                # matching it (good examples decide instead)
+                set_reference_wrong(self.data, s["board"], s["side"], s["uid"], ref, label == "bad")
+            (p.get("new_in_check") or {}).pop(ref, None)
             self._touch(what, p)
         return ex_id
+
+    def _into_check(self, s: dict, ref: str, kind: str | None = None):
+        """A part answered on any board of a design is looked at on every board of it from now on: put
+        in the check (by its look, unless a kind is given) if it isn't yet."""
+        from . import teach as tl
+        if not any(p["ref"] == ref for p in tl.design_for(self.data, s["design"])["parts"]):
+            self.set_extra(ref, kind or "look", board=s["board"])
+        elif self.name == s["board"] and self.design and not any(p["ref"] == ref for p in self.design["parts"]):
+            self.set_extra(ref, kind or "look")
 
     def set_ns(self, src: str, ref: str, on: bool = True, everywhere: bool = False):
         """Marks a part not stuffed on a photo's board, or every board of the design (see teach.py)."""
         from . import teach as tl
         s = tl.set_ns(self.data, src, ref, on, everywhere)
+        if on and not everywhere:      # NS on this board only: the part is looked at on the others
+            self._into_check(s, ref)
         if s["kind"] == "project":
             p = self.project if self.project and self.project["uid"] == s["uid"] else pj.load(self.data, s["uid"])
+            if on:
+                (p.get("new_in_check") or {}).pop(ref, None)
             self._touch(f"{s['side'].capitalize()} {ref}: " + (("NOT STUFFED on every board of this design" if everywhere
                         else "NOT STUFFED on this board") if on else "NS undone") + f" from {s['label']}", p)
 
@@ -406,6 +469,7 @@ class Board:
         the check (ticked on the Parts tab), one without isn't. Kept in the board's profile, and the
         board's references are placed again with the new choices (from the alignment they already
         have), so the next check of another board follows."""
+        self._pull_design()
         lines = {ln["key"]: ln for ln in self.bom["lines"] + self.bom.get("dnp_lines", [])} if self.bom else {}
         said = []
         for key, c in changes.items():
@@ -430,7 +494,7 @@ class Board:
                     self.profile["hidden"].pop(key, None)
                 if c["hidden"] != ((ln or {}).get("hidden") or ""):
                     said.append(f"BOM line {name} " + (f"hidden because {c['hidden']}" if c["hidden"] else "no longer hidden"))
-        self.rebuild(); self.save_profile()
+        self.rebuild(); self.save_profile(design=True)
         if said:
             what = "; ".join(said)
             self._touch(what)
@@ -495,8 +559,24 @@ class Board:
         if st and st.get("points"):
             self.align(side, st["points"])
 
+    def _keep_reference(self, side):
+        """The reference board's photo is about to change: the reference as it is stays in use (as a
+        copy) until the change is reviewed (refchange.py)."""
+        if not (self.project and self.project.get("reference")):
+            return
+        from . import refchange as rc
+        snap = rc.keep_old_reference(self.data, self.project["uid"], side)
+        self.project = pj.load(self.data, self.project["uid"])
+        self.messages.append(f"This board was the reference for checks. The reference as it was is kept ({snap['uid']}) and stays "
+                             "in use until you review the change: line the photo up, then press REVIEW THE REFERENCE CHANGE on the Map tab.")
+        if self.on_change:
+            self.on_change(snap["uid"])
+            self.on_change(self.project["uid"])
+
     def set_photo(self, side, data: bytes):
         img = ph.decode(data)
+        self.messages = []
+        self._keep_reference(side)
         d = self._side_dir(side)
         d.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(d / "reference.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -544,6 +624,7 @@ class Board:
         use = {r: xy for r, xy in points.items() if r in anchors and xy}
         if len(use) < 2:
             raise ValueError("Click at least 2 points to line the photo up.")
+        self._keep_reference(side)
         refs = list(use)
         b = [anchors[r] for r in refs]; p = [use[r] for r in refs]
         orient = self.profile["orient"][side]
@@ -657,12 +738,12 @@ class Board:
         the board open here. status is "checked" (on the photo of its side, or a closeup), "skipped"
         (in the check, but the photo can't show it: why says so), "nophoto" (its side isn't lined up
         yet) or "off" (not ticked, or not on the board). good/bad count the learned examples."""
-        from .check import load_examples
+        from .check import load_examples, pending_refs, taught_refs
         if not self.design or not self.bom:
             return {}
         in_check = {p["ref"]: p for p in self.design["parts"]}
         on_board = {c["ref"]: ("front" if c["side"] == "top" else "back") for c in self.design.get("components", [])}
-        placed, planned, learned = {}, {}, {}
+        placed, planned, learned, taught = {}, {}, {}, {}
         for side in ("front", "back"):
             st = self.sides.get(side) or {}
             if st.get("mapping"):
@@ -671,6 +752,7 @@ class Board:
             n = learned.setdefault(side, {})
             for x in load_examples(self.data, self.name, side)["examples"]:
                 n.setdefault(x["ref"], {"good": 0, "bad": 0})[x["label"]] += 1
+            taught[side] = taught_refs(self.data, self.name, side) | pending_refs(self.data, self.name, side)
         out = {}
         for ln in self.bom["lines"] + self.bom.get("dnp_lines", []):
             rows = []
@@ -692,6 +774,9 @@ class Board:
                     why = rec.get("reason") or ""
                     if rec["checkable"]:
                         r.update(status="checked", why=why)
+                    elif why.startswith("too small") and ref in taught[side]:
+                        # the check compares a small part once it has been answered (see check.py)
+                        r.update(status="checked", why="small in the photo; checked because it has been answered")
                     else:
                         if why.startswith("too small"):
                             why += " · closeup planned" if ref in planned[side] else ""
@@ -779,8 +864,16 @@ class Board:
                           for p in d["parts"]]},
             "sides": {s: self.side_state(s) for s in ("front", "back")} if d else {},
             "project": None if not self.project else {k: self.project.get(k, "") for k in
-                                                      ("uid", "board", "serial", "notes", "created", "odb_file", "bom_file", "reference")},
+                                                      ("uid", "board", "serial", "notes", "created", "odb_file", "bom_file", "reference")}
+            | {"new_in_check": self.project.get("new_in_check") or {}, "reference_change": self._review(),
+               "replaced_reference": "" if self.project.get("reference") else self.project.get("replaced_reference", "")},
         }
+
+    def _review(self):
+        """The reference change of this design still being reviewed, when this board is its new reference."""
+        from . import refchange as rc
+        c = rc.open_for(self.data, self.name)
+        return c if c and c["new"] == self.project["uid"] else None
 
     def write_csv(self):
         if not self.design:

@@ -951,7 +951,11 @@ def test_non_polarised_parts_have_no_pin_1_dot_and_any_turn_passes():
     board = ref.copy(); board[30:50, 40:80] = cv2.rotate(ref[30:50, 40:80], cv2.ROTATE_180)
     part = {"ref": "C1", "kind": "look", "value": "", "box": [40, 30, 40, 20]}
     assert ck.check_part(board, ref, part, 10)["status"] == "ok"
-    assert ck.check_part(board, ref, part, 10, reference_wrong=True)["status"] == "ok"
+    # unless the reference shows it wrong (answered BAD or MISSING there): then matching the reference
+    # doesn't pass it, a good example does
+    assert ck.check_part(board, ref, part, 10, reference_wrong=True)["status"] == "check"
+    good = board[24:56, 34:86].astype(np.float32)
+    assert ck.check_part(board, ref, part, 10, {"good": [(good, {"serial": "8"})]}, reference_wrong=True)["status"] == "ok"
     pol = ck.check_part(board, ref, dict(part, kind="tantalum"), 10)
     assert pol["status"] == "reversed", pol
     # a fault taught before (here: the part missing) is still found
@@ -1012,6 +1016,166 @@ def test_missing_and_not_stuffed_answers():
     b.set_ns(psrc, "D8", False)
     assert load_examples(b.data, board, "front")["not_stuffed"] == {"SN-1": ["C3"]}
     assert run("SN-4")["D8"]["status"] == "check"
+
+
+# ---- answers carry to every board of the design; changing the reference ----------------------
+
+def second_board(b, ref_uid, *rev, tilt=-2.0):
+    """Another mapped board of the design, its front lined up (rev: parts drawn the wrong way round)."""
+    b.new_from(ref_uid)
+    Hm = fx.camera("front", tilt_deg=tilt, ppi=270)
+    b.set_photo("front", cv2.imencode(".png", fx.render("front", Hm, reversed_refs=rev))[1].tobytes())
+    b.align("front", click(Hm, b.design, ["FIDT1", "FIDT2", "FIDT3", "FIDT4"], "front"))
+    return b.project["uid"]
+
+
+def test_an_answer_on_the_reference_is_looked_at_on_every_board():
+    from aoimap import check as ck, viewer as vw
+    b = reference_board()
+    ref_uid, board = b.project["uid"], b.project["board"]
+    uid2 = second_board(b, ref_uid)
+    in_check = lambda: {p["ref"] for p in b.design["parts"]}
+    assert not {"R1", "R2", "D7"} & in_check()
+    # on the reference: R1 answered GOOD, R2 NS on this board, D7 NS on every board
+    b.open_project(ref_uid)
+    src = f"project/{ref_uid}/front"
+    b.teach(src, "R1", "good")
+    b.set_ns(src, "R2")
+    b.set_ns(src, "D7", everywhere=True)
+    assert {"R1", "R2"} <= in_check() and "D7" not in in_check()
+    # the other board, opened again: R1 and R2 are in its check, placed on its photo, new since it was open
+    b.open_project(uid2)
+    assert {"R1", "R2"} <= in_check() and "D7" not in in_check()
+    placed = {r["ref"]: r for r in b.sides["front"]["placed"]}
+    assert "R1" in placed and "R2" in placed      # placed on its photo (small: checked once answered)
+    assert set(b.project["new_in_check"]) == {"R1", "R2"} and any("New in the check" in m for m in b.messages)
+    st = vw.status(b)["parts"]
+    assert st["R1"]["st"] == "checked" and st["R1"]["new"] and st["R1"]["verdict"] == "correct", st["R1"]
+    assert st["D7"]["st"] == "ns"
+    # answered here: no longer new
+    b.teach(f"project/{uid2}/front", "R1", "good")
+    assert "R1" not in b.project["new_in_check"]
+    # a board open here can't put back an older list of what to check that another board has added to
+    other = Board(b.data)
+    other.open_project(ref_uid)
+    other.set_extra("D7", "look")
+    b.set_option("min_px", 13)               # saves this board's choices
+    prof = ck.board_profile(b.data, board)
+    assert {"R1", "R2", "D7"} <= set(prof["extra"])
+    other.set_extra("D7", remove=True)
+    # and a check of another board covers R1 and R2
+    c = ck.Checks(b.data)
+    c.start(ref_uid, "SN-C1")
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["R1"]["status"] == "ok" and "R2" in res and "D7" not in res
+
+
+def test_a_check_picks_up_parts_put_in_the_check_after_it_was_done():
+    from aoimap import check as ck
+    b = reference_board()
+    ref_uid = b.project["uid"]
+    c = ck.Checks(b.data)
+    c.start(ref_uid, "SN-L1")
+    c.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+    for r in c.cur["sides"]["front"]["results"]:
+        if r["status"] != "ok":
+            c.answer("front", r["ref"], "correct")
+    uid, before = c.cur["uid"], c.cur["result"]
+    assert before == "PASS" and "R2" not in {r["ref"] for r in c.cur["sides"]["front"]["results"]}
+    c.close()
+    b.teach(f"project/{ref_uid}/front", "R2", "good")
+    c.open(uid)
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["R2"]["since"] and res["R2"]["status"] == "ok", res["R2"]
+    assert all(r.get("answer") == "correct" for r in c.cur["sides"]["front"]["results"] if r["status"] != "ok" and r["ref"] != "R2")
+    assert "New in the check since" in c.cur["log"][-1]["what"] and ck.load(b.data, uid)["sides"]["front"]["results"][-1]["ref"] == "R2"
+
+
+def test_bad_or_missing_on_the_reference_isnt_passed_for_matching_it():
+    from aoimap import check as ck
+    b = reference_board()
+    ref_uid, board = b.project["uid"], b.project["board"]
+    src = f"project/{ref_uid}/front"
+    b.teach(src, "R1", "bad", "missing")       # by its look: R1 shows wrong on the reference
+    assert ck.load_examples(b.data, board, "front")["reference_wrong"] == {ref_uid: ["R1"]}
+    c = ck.Checks(b.data)
+    shot = lambda: cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes()
+    c.start(ref_uid, "SN-W1")
+    c.photo("front", shot())
+    r1 = next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "R1")
+    assert r1["status"] != "ok", r1
+    # GOOD on the reference again: its look is the standard
+    ex = next(e for e in ck.load_examples(b.data, board, "front")["examples"] if e["ref"] == "R1")
+    c.forget(board, "front", ex["id"])
+    assert ck.load_examples(b.data, board, "front")["reference_wrong"] == {}
+    b.teach(src, "R1", "good")
+    c.start(ref_uid, "SN-W2")
+    c.photo("front", shot())
+    assert next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "R1")["status"] == "ok"
+
+
+def _built(data, cid):
+    import time as _t
+    from aoimap import refchange as rc
+    for _ in range(600):
+        if cid not in rc._BUILDING:
+            return rc.view(data, cid)
+        _t.sleep(0.1)
+    raise AssertionError("the comparison didn't finish")
+
+
+def test_changing_the_reference_asks_about_each_difference():
+    from aoimap import check as ck, projects as pj, refchange as rc
+    b = reference_board()
+    old, board = b.project["uid"], b.project["board"]
+    b.teach(f"project/{old}/front", "R1", "good")
+    new = second_board(b, old, "C3")         # C3 is the wrong way round on the new one
+    c = _built(b.data, rc.start(b.data, old, new)["id"])
+    rows = {r["ref"]: r for r in c["rows"]}
+    assert "C3" in rows and "turned" in rows["C3"]["kinds"], c["rows"]
+    assert c["same"]["front"] and "C5" in c["same"]["front"] and c["status"] == "open"
+    from aoimap import teach as tl
+    assert tl.crop(b.data, f"project/{new}/front", "C3", "reference", old)[:2] == b"\xff\xd8"
+    # the old reference stays in use until every difference has a decision
+    assert [r["uid"] for r in ck.references(b.data)] == [old]
+    try:
+        rc.finish(b.data, c["id"]); raise AssertionError("finished with parts left")
+    except ValueError as e:
+        assert "still need a decision" in str(e)
+    rc.approve_matching(b.data, c["id"])
+    for r in c["rows"]:
+        if r["key"] not in rc.load(b.data, c["id"])["decisions"]:
+            rc.decide(b.data, c["id"], [r["key"]], "wrong" if r["ref"] == "C3" else "keep_old")
+    v = rc.finish(b.data, c["id"])
+    assert v["status"] == "done" and [r["uid"] for r in ck.references(b.data)] == [new]
+    lx = ck.load_examples(b.data, board, "front")
+    assert lx["reference_wrong"].get(new) == ["C3"] and any(e["ref"] == "C3" and e["label"] == "bad" for e in lx["examples"])
+    assert "Reference for checks changed" in pj.load(b.data, new)["log"][-1]["what"]
+    assert rc.changes(b.data, board)[0]["status"] == "done"
+    # undo: the old reference is back, and what the decisions added is gone
+    rc.undo(b.data, c["id"])
+    assert [r["uid"] for r in ck.references(b.data)] == [old]
+    lx = ck.load_examples(b.data, board, "front")
+    assert not lx["reference_wrong"].get(new) and not any(e["ref"] == "C3" for e in lx["examples"])
+
+
+def test_new_photo_of_the_reference_keeps_the_old_one_until_reviewed():
+    from aoimap import check as ck, refchange as rc
+    b = reference_board()
+    uid = b.project["uid"]
+    Hm = fx.camera("front", tilt_deg=2, ppi=275)
+    b.set_photo("front", cv2.imencode(".png", fx.render("front", Hm))[1].tobytes())
+    refs = ck.references(b.data)
+    assert len(refs) == 1 and refs[0]["uid"] != uid and not b.project.get("reference")
+    snap = refs[0]["uid"]
+    b.align("front", click(Hm, b.design, ["FIDT1", "FIDT2", "FIDT3", "FIDT4"], "front"))
+    assert [r["uid"] for r in ck.references(b.data)] == [snap]       # lining up again doesn't copy it twice
+    c = _built(b.data, rc.start(b.data, snap, uid, "photo")["id"])
+    for r in c["rows"]:
+        rc.decide(b.data, c["id"], [r["key"]], "accept")
+    rc.finish(b.data, c["id"])
+    assert [r["uid"] for r in ck.references(b.data)] == [uid]
 
 
 # ---- the board viewer on the Map tab (netlist.py, viewer.py) ---------------------------------

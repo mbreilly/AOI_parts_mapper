@@ -24,6 +24,7 @@ from . import groups as gr
 from . import models as md
 from . import photo as ph
 from . import projects as pj
+from . import refchange as rc
 from . import teach as tl
 from . import viewer as vw
 from .board import Board
@@ -56,6 +57,7 @@ class App:
         self.board.on_change = self.history.changed
         self.board.on_profile = self.history.changed_profile
         ck.LEARNED_LISTENERS.append(self.history.changed_learned)
+        rc.LISTENERS.append(self.history.changed_refchange)
         self.checks = ck.Checks(data_dir)
         self.checks.on_change = self.history.changed_check
         self.lock = threading.Lock()
@@ -83,6 +85,46 @@ class App:
             out.append(st)
         return {"boards": out, "jobs": md.JOBS, "minimum_parts": md.MIN_PARTS,
                 "extractor": (self.data / "models" / md.EXTRACTOR).is_file()}
+
+    # ---- changing the reference (refchange.py) -------------------------------------------------
+    def refresh_project(self, uid: str):
+        """A project's placed parts brought up to the design's choices (as opening it does)."""
+        b = self.board
+        if b.project and b.project["uid"] == uid:
+            b.open_project(uid)
+            return
+        o = Board(self.data)
+        o.on_change = self.history.changed
+        o.open_project(uid)
+
+    def projects_changed(self, uid: str):
+        """A project changed on disk outside the board open here (its reference mark): the open copy follows."""
+        b = self.board
+        if b.project and b.project["uid"] == uid:
+            b.project = pj.load(self.data, uid)
+        self.history.changed(uid)
+
+    def reference(self, uid: str, on: bool) -> dict:
+        """Marks a project the reference; when the design has one already, a change to review instead."""
+        b = self.board
+        p = pj.load(self.data, uid)
+        cur = next((r for r in ck.references(self.data) if r["board"] == p["board"] and r["uid"] != uid), None)
+        if on and cur and not p.get("reference"):
+            c = rc.start(self.data, cur["uid"], uid, "switch", self.refresh_project)
+            return {"review": rc.brief(c)}
+        b.set_reference(uid, on)
+        return {}
+
+    def start_review(self, uid: str) -> dict:
+        """A review for a board whose own photo changed while it was the reference (or any board against
+        the reference in use)."""
+        p = pj.load(self.data, uid)
+        cur = next((r for r in ck.references(self.data) if r["board"] == p["board"] and r["uid"] != uid), None)
+        if not cur:
+            self.board.set_reference(uid, True)
+            return {}
+        c = rc.start(self.data, cur["uid"], uid, "photo" if p.get("replaced_reference") else "switch", self.refresh_project)
+        return {"review": rc.brief(c)}
 
     # ---- the project chosen above the tabs (groups.py) ------------------------------------------
     def group(self) -> dict | None:
@@ -239,6 +281,8 @@ def make_handler(app: App):
                 if parts[1:2] == ["part"]:
                     with app.lock:
                         return self._part_get(parts[2:], q)
+                if parts[1:2] == ["refchange"]:
+                    return self._refchange_get(parts[2:], q)
                 b = app.board
                 with app.lock:
                     if parts[1:] == ["state"]:
@@ -317,6 +361,40 @@ def make_handler(app: App):
                     while chunk := fh.read(1 << 20):
                         self.wfile.write(chunk)
                 return None
+            return self._err("Not found", 404)
+
+        def _refchange_get(self, r, q):
+            """Reference changes: the list (of a design, or the project chosen), one change, a crop."""
+            if not r:
+                boards = app.boards_for(q) if not q.get("board") else {q["board"]}
+                return self._json({"changes": [c for c in rc.changes(app.data) if boards is None or c["board"] in boards]})
+            if len(r) == 1:
+                return self._json(rc.view(app.data, r[0]))
+            if len(r) == 2 and r[1] == "crop":
+                c = rc.load(app.data, r[0])
+                side, ref = q["key"].split("/", 1)
+                which = "reference" if q.get("which") == "old" else "board"
+                return self._send(200, tl.crop(app.data, f"project/{c['new']}/{side}", ref, which, c["old"]), "image/jpeg", cache=True)
+            return self._err("Not found", 404)
+
+        def _refchange_post(self, r):
+            j = self._jbody()
+            if r == ["start"]:
+                return self._json(app.start_review(j["uid"]))
+            cid = r[0] if r else ""
+            what = r[1] if len(r) == 2 else ""
+            if what == "decide":
+                return self._json(rc.decide(app.data, cid, list(j.get("keys") or []), j.get("choice") or None))
+            if what == "approve":
+                return self._json(rc.approve_matching(app.data, cid))
+            if what == "finish":
+                return self._json(rc.finish(app.data, cid, app.projects_changed))
+            if what == "undo":
+                return self._json(rc.undo(app.data, cid, app.projects_changed))
+            if what == "cancel":
+                v = rc.cancel(app.data, cid)
+                app.projects_changed(v["new"])
+                return self._json(v)
             return self._err("Not found", 404)
 
         def _viewer_get(self, r, q):
@@ -499,6 +577,8 @@ def make_handler(app: App):
                         return self._check_post(r[1:])
                     if r[:1] == ["part"]:
                         return self._part_post(r[1:])
+                    if r[:1] == ["refchange"]:
+                        return self._refchange_post(r[1:])
                     if len(r) == 3 and r[0] == "history":
                         uid, what = r[1], r[2]
                         if what == "open":
@@ -514,8 +594,8 @@ def make_handler(app: App):
                             b.set_info(uid, j.get("serial"), j.get("notes"))
                             return self._json(app.history.detail(uid))
                         if what == "reference":
-                            b.set_reference(uid, bool(self._jbody().get("on", True)))
-                            return self._json(app.history.detail(uid))
+                            out = app.reference(uid, bool(self._jbody().get("on", True)))
+                            return self._json({**app.history.detail(uid), **out})
                     if r == ["columns"]:
                         b.set_columns(self._jbody())
                         return self._json(b.state())
