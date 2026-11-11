@@ -6,7 +6,9 @@ view = (sx * x, sy * y). The front is normally (1, -1) (photo y runs down, board
 back (1, 1) when the board is turned over top to bottom, or (-1, -1) when turned left to right.
 A transform is then fitted from view to photo pixels: a similarity from 2 points, affine from 3,
 homography from 4 or more, with the error left at each anchor spread smoothly between anchors to
-follow lens bending.
+follow lens bending. RE-LINE-UP then finds each part's body near where that puts it, and fits a smooth
+correction (a polynomial in view coordinates) through the parts it finds, for the lens bending and
+board bow the few anchors can't show.
 """
 
 import math
@@ -122,6 +124,7 @@ class Mapping:
     anchors_view: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), np.float32))
     residual: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), np.float32))
     errors: list = field(default_factory=list)
+    fine: dict | None = None          # RE-LINE-UP's correction: {"c", "sc", "deg", "coef", "cap"}, see refine_lineup
 
     def apply(self, board_pts) -> np.ndarray:
         pts = np.float32(view(board_pts, self.orient)).reshape(-1, 2)
@@ -129,7 +132,13 @@ class Mapping:
         if len(self.residual):
             w = 1 / (np.linalg.norm(pts[:, None] - self.anchors_view[None], axis=2) ** 2 + 1e-12)
             base = base + (w @ self.residual) / w.sum(1, keepdims=True)
+        if self.fine:
+            base = base + _fine_shift(self.fine, pts)
         return base
+
+    def coarse(self) -> "Mapping":
+        """The same line-up without RE-LINE-UP's correction."""
+        return Mapping(self.kind, self.M, self.orient, self.anchors_view, self.residual, self.errors)
 
     def px_per_unit(self, at) -> float:
         """Photo pixels per board unit near a board point."""
@@ -140,12 +149,13 @@ class Mapping:
 
     def to_dict(self):
         return {"kind": self.kind, "M": self.M.tolist(), "orient": list(self.orient),
-                "anchors_view": self.anchors_view.tolist(), "residual": self.residual.tolist(), "errors": self.errors}
+                "anchors_view": self.anchors_view.tolist(), "residual": self.residual.tolist(), "errors": self.errors,
+                **({"fine": self.fine} if self.fine else {})}
 
     @staticmethod
     def from_dict(d):
         return Mapping(d["kind"], np.float64(d["M"]), tuple(d["orient"]), np.float32(d["anchors_view"]).reshape(-1, 2),
-                       np.float32(d["residual"]).reshape(-1, 2), d.get("errors", []))
+                       np.float32(d["residual"]).reshape(-1, 2), d.get("errors", []), d.get("fine"))
 
 
 def fit(board_pts, photo_pts, orient, extra_board=(), extra_photo=()) -> Mapping:
@@ -214,6 +224,119 @@ def check_points(board_pts, photo_pts, orient, img_w, mapping) -> list[str]:
     if big and mapping.kind != "similarity" and len(board_pts) > 4:
         warn.append(f"{len(big)} point(s) are more than {max(4.0, img_w / 300):.0f} px from where the others put them.")
     return warn
+
+
+# ---- RE-LINE-UP: a smooth correction fitted to the parts themselves ------------------------
+
+def _terms(uv, deg):
+    u, v = uv[:, 0], uv[:, 1]
+    return np.stack([u ** i * v ** j for i in range(deg + 1) for j in range(deg + 1 - i)], 1)
+
+
+def _fine_shift(fine, view_pts) -> np.ndarray:
+    uv = (np.float64(view_pts).reshape(-1, 2) - fine["c"]) / fine["sc"]
+    d = _terms(uv, fine["deg"]) @ np.float64(fine["coef"])
+    n = np.linalg.norm(d, axis=1, keepdims=True)    # never further than the parts measured, even far from them
+    return (d * np.minimum(1, fine["cap"] / np.maximum(n, 1e-9))).astype(np.float32)
+
+
+def part_mask(img: np.ndarray) -> np.ndarray:
+    """1 where the photo isn't solder mask green, with thin lines (silkscreen, text) opened away: part
+    bodies and pads."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    m = 255 - cv2.inRange(hsv, (35, 60, 30), (95, 255, 255))
+    k = max(3, int(round(img.shape[1] / 6000 * 7))) | 1
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    return m.astype(np.float32) / 255
+
+
+def measure_offsets(mask: np.ndarray, mapping: Mapping, parts: list[dict], rot_sign: int, reach: int) -> list[dict]:
+    """For each part, how far (dx, dy photo px, within +-reach) its body lies from where the mapping
+    draws it: its outline filled, slid over the part mask for the best match. "sure" when the best
+    match is good and clearly better than any other place (not a neighbour's twin)."""
+    H, W = mask.shape
+    out = []
+    for p in parts:
+        poly = mapping.apply(outline_corners(p, rot_sign))
+        e = min(np.linalg.norm(poly[1] - poly[0]), np.linalg.norm(poly[2] - poly[1]))
+        if e < 8:
+            continue
+        x0, y0 = np.floor(poly.min(0)) - 6
+        x1, y1 = np.ceil(poly.max(0)) + 6
+        X0, Y0, X1, Y1 = int(x0) - reach, int(y0) - reach, int(x1) + reach, int(y1) + reach
+        if X0 < 0 or Y0 < 0 or X1 > W or Y1 > H:
+            continue
+        T = np.zeros((int(y1 - y0), int(x1 - x0)), np.float32)
+        cv2.fillPoly(T, [np.round((poly - [x0, y0]) * 4).astype(np.int32)], 1, cv2.LINE_AA, shift=2)
+        res = cv2.matchTemplate(mask[Y0:Y1, X0:X1], T, cv2.TM_CCOEFF_NORMED)
+        _, best, _, (lx, ly) = cv2.minMaxLoc(res)
+        sub = lambda a, b, c: 0.0 if a - 2 * b + c == 0 else float(0.5 * (a - c) / (a - 2 * b + c))
+        fx = sub(*res[ly, lx - 1:lx + 2]) if 0 < lx < res.shape[1] - 1 else 0.0
+        fy = sub(*res[ly - 1:ly + 2, lx]) if 0 < ly < res.shape[0] - 1 else 0.0
+        other = res.copy()
+        cv2.circle(other, (lx, ly), int(max(4, e / 3)), -1, -1)
+        edge = lx in (0, res.shape[1] - 1) or ly in (0, res.shape[0] - 1)
+        out.append({"ref": p["ref"], "x": p["x"], "y": p["y"], "dx": lx + fx - reach, "dy": ly + fy - reach,
+                    "sure": bool(best > 0.6 and best - other.max() > 0.04 and not edge)})
+    return out
+
+
+def _fit_fine(view_pts, shifts, anchors_view, deg):
+    """A polynomial shift through the parts' shifts, refitted without the ones far from it; zero at the
+    anchors the user clicked. Returns the correction and which parts it kept."""
+    P = np.float64(list(view_pts) + list(anchors_view))
+    d = np.float64(list(shifts) + [[0, 0]] * len(anchors_view))
+    fixed = np.arange(len(P)) >= len(view_pts)
+    w = np.where(fixed, 20.0, 1.0)
+    c = P.mean(0)
+    sc = float(np.abs(P - c).max()) or 1.0
+    A = _terms((P - c) / sc, deg)
+    keep = np.ones(len(P), bool)
+    for _ in range(8):
+        sw = np.sqrt(w * keep)[:, None]
+        coef = np.linalg.lstsq(A * sw, d * sw, rcond=None)[0]
+        e = np.linalg.norm(A @ coef - d, axis=1)
+        keep = fixed | (e < max(4.0, 3 * 1.4826 * np.median(e[~fixed & keep])))
+    cap = float(np.percentile(np.linalg.norm(d[keep & ~fixed], axis=1), 98)) + 2
+    return {"c": c.tolist(), "sc": sc, "deg": deg, "coef": coef.tolist(), "cap": cap}, keep[:len(view_pts)]
+
+
+def refine_lineup(img: np.ndarray, mapping: Mapping, parts: list[dict], rot_sign: int,
+                  anchors_board=()) -> tuple[Mapping, dict]:
+    """RE-LINE-UP: the mapping (its own correction dropped) plus a smooth correction fitted to where the
+    parts' bodies are found. Returns it and the offsets before and after: median and 90th percentile
+    in photo px over the parts found surely, and where the old line-up was worst."""
+    base = mapping.coarse()
+    mask = part_mask(img)
+    view_of = lambda ms: np.float64(view([[m["x"], m["y"]] for m in ms], base.orient)).reshape(-1, 2)
+    av = np.float64(view(list(anchors_board), base.orient)).reshape(-1, 2) if len(anchors_board) else np.zeros((0, 2))
+    first = [m for m in measure_offsets(mask, base, parts, rot_sign, 40) if m["sure"]]
+    if len(first) < 30:
+        raise ValueError(f"Only {len(first)} parts could be found surely on this photo; at least 30 are needed to re-line it up.")
+    deg = lambda n: 4 if n >= 150 else 3
+    fine, keep = _fit_fine(view_of(first), [[m["dx"], m["dy"]] for m in first], av, deg(len(first)))
+    # again, searching close to where the first correction puts each part, so a row of twins can't mislead
+    step = Mapping(base.kind, base.M, base.orient, base.anchors_view, base.residual, base.errors, fine)
+    second = [m for m in measure_offsets(mask, step, parts, rot_sign, 12) if m["sure"]]
+    if len(second) < 30:
+        raise ValueError("Too few parts were found again after the first correction; the line-up was left as it was.")
+    v2 = view_of(second)
+    total = _fine_shift(fine, v2) + np.float32([[m["dx"], m["dy"]] for m in second])
+    fine, keep = _fit_fine(v2, total, av, deg(len(second)))
+    new = Mapping(base.kind, base.M, base.orient, base.anchors_view, base.residual, base.errors, fine)
+    after = {m["ref"]: np.hypot(m["dx"], m["dy"]) for m in measure_offsets(mask, new, parts, rot_sign, 12) if m["sure"]}
+    kept = [m for m, k in zip(second, keep) if k and m["ref"] in after]
+    before = np.linalg.norm(total[[i for i, k in enumerate(keep) if k and second[i]["ref"] in after]], axis=1)
+    aft = np.float64([after[m["ref"]] for m in kept])
+    worst = sorted(zip(before, (m["ref"] for m in kept)), reverse=True)[:5]
+    stats = {"parts": len(kept), "found": len(second), "degree": fine["deg"],
+             "before": {"median": round(float(np.median(before)), 1), "p90": round(float(np.percentile(before, 90)), 1)},
+             "after": {"median": round(float(np.median(aft)), 1), "p90": round(float(np.percentile(aft, 90)), 1)},
+             "worst_before": [{"ref": r, "px": round(float(b), 1)} for b, r in worst]}
+    if stats["after"]["median"] >= stats["before"]["median"]:
+        raise ValueError(f"The parts are already where the line-up puts them (median {stats['before']['median']} px off); "
+                         "nothing was changed.")
+    return new, stats
 
 
 # ---- extra anchors: tantalum capacitors -------------------------------------------------

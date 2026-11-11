@@ -1546,6 +1546,37 @@ def test_ics_and_transistors_keep_pin_1_whatever_the_description_says():
         assert kind == {"UT38": "ic", "UT29": "ic", "QB1": "ic", "DT1": None, "R1": None}, kind
 
 
+def test_reline_up_follows_lens_bending_and_undoes():
+    # a photo bent like a lens: true pixel = homography + a barrel term the 4 corner anchors can't show
+    k, W, H = 120.0, 2400, 1600
+    def true_px(pts):
+        q = np.float64(pts) * k + [200, 200]
+        r = (q - [W / 2, H / 2]) / (W / 2)
+        return q + 18 * r * (r ** 2).sum(1, keepdims=True) - 18 * r * 0.75
+    parts = [{"ref": f"C{i}", "x": 0.5 + (i % 14) * 1.2, "y": 0.5 + (i // 14) * 1.15, "rot": 90.0 * (i % 2), "turn": 1,
+              "mirror": False, "bbox": [-0.12, -0.06, 0.12, 0.06], "side": "top"} for i in range(14 * 10)]
+    img = np.full((H, W, 3), (40, 140, 40), np.uint8)
+    for p in parts:
+        cv2.fillPoly(img, [np.round(true_px(designlib.outline_corners(p)) * 4).astype(np.int32)], (200, 200, 200), cv2.LINE_AA, shift=2)
+    corners = [[0, 0], [16.67, 0], [16.67, 10], [0, 10]]
+    base = ph.fit(corners, true_px(corners).tolist(), (1, 1))
+    truth = true_px([[p["x"], p["y"]] for p in parts])
+    err = lambda m: np.linalg.norm(m.apply([[p["x"], p["y"]] for p in parts]) - truth, axis=1)
+    assert np.median(err(base)) > 3
+    m, stats = ph.refine_lineup(img, base, parts, 1, corners)
+    assert np.median(err(m)) < 1.0 and np.percentile(err(m), 90) < 2.0, (np.median(err(m)), stats)
+    assert stats["after"]["median"] < stats["before"]["median"]
+    back = ph.Mapping.from_dict(json.loads(json.dumps(m.to_dict())))
+    assert np.allclose(back.apply([[3, 4]]), m.apply([[3, 4]]), atol=1e-3)
+    assert m.coarse().fine is None and np.allclose(m.coarse().apply([[3, 4]]), base.apply([[3, 4]]))
+    # too few parts to go by: refused, nothing changed
+    try:
+        ph.refine_lineup(img, base, parts[:10], 1, corners)
+        assert False
+    except ValueError as e:
+        assert "at least 30" in str(e)
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

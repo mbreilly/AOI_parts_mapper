@@ -669,6 +669,10 @@ function renderSide(side) {
   if (!cu && st.aligned) {
     res += `<div class="dim">Lined up${st.how ? ": " + esc(st.how) : ""}.${st.errors.length > 3 ? " Largest point error " + Math.max(...st.errors).toFixed(1) + " px." : ""}</div>`;
     for (const w of st.warnings) res += `<div class="warn">${esc(w)}</div>`;
+    const rl = st.reline;
+    res += `<div class="row"><button id="reline" class="small">RE-LINE-UP</button>${st.can_undo ? `<button id="reline-undo" class="small">UNDO RE-LINE-UP</button>` : ""}</div>
+      <div class="dim">${rl ? `Re-lined up from ${rl.parts} parts found on the photo: outlines were ${rl.before.median} px off (90% within ${rl.before.p90} px), now ${rl.after.median} px (90% within ${rl.after.p90} px).`
+        : "If outlines sit beside their parts somewhere on the photo, RE-LINE-UP finds the parts and bends the line-up to fit them."}</div>`;
   }
   if (!cu && S.project && (S.project.replaced_reference || S.project.reference_change))
     res += `<div class="warn">This board was the reference for checks. The reference as it was stays in use until you review the differences${st.aligned ? "" : " (line this photo up first)"}.
@@ -1037,7 +1041,12 @@ $("#tiles").addEventListener("click", e => {
   say(c ? "" : "Frame just this area of the board, as close as the camera will focus, then take the photo or choose a file.");
   renderSide(side);
 });
-$("#align-result").addEventListener("click", e => { if (e.target.id === "back-full") { ui.closeup = null; ZS.w = 0; stopCamera(); renderSide(tab); } });
+$("#align-result").addEventListener("click", e => {
+  if (e.target.id === "back-full") { ui.closeup = null; ZS.w = 0; stopCamera(); renderSide(tab); }
+  const side = tab;
+  if (e.target.id === "reline") { e.target.disabled = true; e.target.textContent = "FINDING THE PARTS…"; act(() => post(`api/side/${side}/reline`, {}), "Re-lined up. Outlines follow the parts found on the photo; UNDO RE-LINE-UP puts them back.").finally(() => { if (tab === side) renderSide(side); }); }
+  if (e.target.id === "reline-undo") act(() => post(`api/side/${side}/reline-undo`, {}), "Re-line-up undone.");
+});
 $("#side-legend").addEventListener("click", e => { const b = e.target.closest("[data-stat]"); if (b) { ui.sideStat = ui.sideStat === b.dataset.stat ? "all" : b.dataset.stat; renderSide(tab); } });
 $("#marks-on").addEventListener("change", e => { ui.marks = e.target.checked; keepUi(); renderSide(tab); });
 $("#side-parts").addEventListener("click", e => {

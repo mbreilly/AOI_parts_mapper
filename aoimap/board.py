@@ -568,6 +568,8 @@ class Board:
                 st["mapping"] = ph.Mapping.from_dict(a["mapping"])
                 st["points"] = a.get("points", {})
                 st["anchors"] = a.get("anchors", {})
+                st["how"], st["warnings"] = a.get("how", ""), a.get("warnings", [])
+                st["reline"], st["can_undo"] = a.get("reline"), bool(a.get("before_reline"))
             for f in sorted((d / "closeups").glob("*.json")) if (d / "closeups").is_dir() else []:
                 c = _read_json(f)
                 img = cv2.imread(str(f.with_suffix(".jpg")))
@@ -666,7 +668,7 @@ class Board:
         ws = ph.wrong_side_warning(st["img"], self.design, side, n_found, n_tant)
         if ws:
             warnings.append(ws)
-        st.update(mapping=m, points=use, warnings=warnings, extra=n_found,
+        st.update(mapping=m, points=use, warnings=warnings, extra=n_found, reline=None, can_undo=False,
                   how=f"{m.kind} from {len(use)} point(s)" + (f" and {n_found} tantalum capacitors" if used_tant else ""))
         self._place(side)
         _write_json(self._side_dir(side) / "alignment.json",
@@ -676,6 +678,41 @@ class Board:
         self._touch(f"{side.capitalize()} lined up ({st['how']}): {sum(r['checkable'] for r in placed)} of {len(placed)} parts checkable"
                     + (f"; {len(warnings)} warning(s)" if warnings else ""))
         return self.side_state(side)
+
+    def reline(self, side):
+        """RE-LINE-UP: corrects the line-up from where the parts themselves are found on the photo. The
+        line-up before it is kept in alignment.json, for UNDO. The photo is the same, so a reference
+        board stays the reference."""
+        st = self.sides.get(side) or {}
+        if not st.get("mapping"):
+            raise ValueError("Line this photo up first.")
+        anchors = self.anchors(side)["points"]
+        clicked = [anchors[r] for r in st.get("points", {}) if r in anchors]
+        comps = [c for c in self.design.get("components") or self.design["parts"] if c["side"] == ph.SIDE_LAYER[side]]
+        m, stats = ph.refine_lineup(st["img"], st["mapping"], comps, self.design["rot_sign"], clicked)
+        f = self._side_dir(side) / "alignment.json"
+        a = _read_json(f, {})
+        a["before_reline"] = a.get("mapping") or st["mapping"].to_dict()
+        a["mapping"], a["reline"] = m.to_dict(), stats
+        _write_json(f, a)
+        st.update(mapping=m, reline=stats, can_undo=True)
+        self._place(side)
+        self._touch(f"{side.capitalize()} re-lined up from {stats['parts']} parts: median offset {stats['before']['median']} px "
+                    f"-> {stats['after']['median']} px (90% within {stats['before']['p90']} -> {stats['after']['p90']} px)")
+        return stats
+
+    def undo_reline(self, side):
+        st = self.sides.get(side) or {}
+        f = self._side_dir(side) / "alignment.json"
+        a = _read_json(f, {})
+        if not a.get("before_reline"):
+            raise ValueError("There's no re-line-up to undo.")
+        a["mapping"] = a.pop("before_reline")
+        a.pop("reline", None)
+        _write_json(f, a)
+        st.update(mapping=ph.Mapping.from_dict(a["mapping"]), reline=None, can_undo=False)
+        self._place(side)
+        self._touch(f"{side.capitalize()} re-line-up undone")
 
     def _place(self, side):
         st = self.sides[side]
@@ -857,6 +894,7 @@ class Board:
             "photo": True, "width": st["img"].shape[1], "height": st["img"].shape[0], "stamp": self._stamp(side),
             "aligned": bool(st.get("mapping")), "points": st.get("points", {}), "how": st.get("how", ""),
             "errors": st["mapping"].errors if st.get("mapping") else [], "warnings": st.get("warnings", []),
+            "reline": st.get("reline"), "can_undo": bool(st.get("can_undo")),
             "placed": placed, "others": others,
             "summary": {"parts": len(placed) + len(others), "in_check": len(placed),
                         "checkable": sum(r["checkable"] for r in placed),

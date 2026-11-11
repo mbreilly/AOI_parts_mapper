@@ -637,6 +637,12 @@ def make_handler(app: App):
                         if what == "align":
                             b.align(side, self._jbody()["points"])
                             return self._json(b.state())
+                        if what == "reline":
+                            b.reline(side)
+                            return self._json(b.state())
+                        if what == "reline-undo":
+                            b.undo_reline(side)
+                            return self._json(b.state())
                         if what == "closeup" and len(r) == 5:
                             i = int(r[3])
                             if r[4] == "photo":
