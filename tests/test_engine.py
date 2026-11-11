@@ -965,9 +965,17 @@ def test_non_polarised_parts_have_no_pin_1_dot_and_any_turn_passes():
            "pin1": [42, 50], "checkable": True, "reason": ""}
     red = lambda jpg: int(((lambda v: (v[..., 2] > 150) & (v[..., 0] < 100) & (v[..., 1] < 100))(
         cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR))).sum())
-    # the side map: a pin 1 dot for a polarised part, just the outline for a look-only one
+    # the side map: a pin 1 dot for a polarised part, just the outline for a two-pin look-only one;
+    # a look-only IC still shows its pin 1
     assert red(ph.overlay(img, [dict(rec, kind="ic")], width=0)) > 0
-    assert red(ph.overlay(img, [dict(rec, kind="look")], width=0)) == 0
+    class m:         # board units are photo pixels here
+        apply = staticmethod(lambda pts: np.float32(pts).reshape(-1, 2))
+    p = {"ref": "X", "kind": "look", "value": "", "side": "top", "x": 60, "y": 50, "rot": 0, "mirror": False, "turn": -1,
+         "bbox": [-20, -10, 20, 10], "pin1": [42, 50], "pin1_dir": "W", "pin1_how": "named", "pins": 2}
+    two = ph.place({"parts": [p]}, "front", img.shape, m, 1, -1)
+    many = ph.place({"parts": [dict(p, pins=14)]}, "front", img.shape, m, 1, -1)
+    assert "pin1" not in two[0] and red(ph.overlay(img, two, width=0)) == 0
+    assert "pin1" in many[0] and red(ph.overlay(img, many, width=0)) > 0
     # a look-only part with one end marked, turned round on the board: fine, and its learned examples count either way
     ref = np.full((80, 120, 3), 90, np.uint8); ref[30:50, 40:80] = 200; ref[30:50, 40:48] = 20
     board = ref.copy(); board[30:50, 40:80] = cv2.rotate(ref[30:50, 40:80], cv2.ROTATE_180)

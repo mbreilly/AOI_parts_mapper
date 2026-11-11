@@ -276,7 +276,7 @@ def place(design: dict, side: str, img_shape, mapping: Mapping, min_px: float, r
                "centre": centre.round(1).tolist(),
                "box": [int(round(x0)), int(round(y0)), int(round(x1 - x0)), int(round(y1 - y0))],
                "px": round(px, 1), "pin1_dir": p["pin1_dir"], "pin1_how": p["pin1_how"]}
-        if p.get("pin1"):
+        if p.get("pin1") and (p["kind"] != "look" or p.get("pins", 0) > 2):   # a two-pin look-only part has no pin 1 to show
             rec["pin1"] = mapping.apply([p["pin1"]])[0].round(1).tolist()
         mk = marking(p, design.get("markings", {}))
         if mk:
@@ -453,7 +453,7 @@ def overlay(img: np.ndarray, placed: list[dict], width: int = 1600, highlight: s
             continue
         if outlines:
             cv2.polylines(vis, [q], True, col, t + (2 if r["ref"] == highlight else 0) + (1 if ans else 0), cv2.LINE_AA)
-        if r.get("pin1") and r["kind"] != "look" and (outlines or show_marks):    # a non-polarised part has no pin 1 to show
+        if r.get("pin1") and (outlines or show_marks):
             cv2.circle(vis, tuple(int(v * s) for v in r["pin1"]), max(2, t + 1), (0, 0, 255) if r["checkable"] else GREY, -1, cv2.LINE_AA)
         if show_marks and r.get("mark") and r["checkable"] and r["mark"]["type"] == "band":
             at, to = np.float32(r["mark"]["at"]) * s, np.float32(r["mark"]["towards"]) * s
