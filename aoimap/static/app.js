@@ -124,14 +124,16 @@ const STATUS = {
   bad: { t: "BAD", n: "bad", tip: "Answered BAD on this board" },
   missing: { t: "MISSING", n: "missing", tip: "Answered MISSING on this board" },
   ns: { t: "NS", n: "NS", tip: "Not stuffed: left off on purpose" },
-  cant: { t: "CAN'T BE SEEN", n: "can't be seen", tip: "In the check, but the photo can't show it (too small, hidden, off the photo)" },
+  cant: { t: "CAN'T BE SEEN", n: "can't be seen", tip: "In the check, but the photo can't show it (too small, hidden, off the photo), or covered on this board (a heatsink...)" },
   off: { t: "NOT CHECKED", n: "not checked", tip: "In the design, not in the check" },
 };
 const STATUS_COL = { in: "#5BB8F5", good: "#6FCF73", bad: "#FF5C5C", missing: "#FF9A3D", ns: "#B4B4B4", cant: "#C49BFF", off: "#8A909C" };
 function ustat(o) {
   if (!o) return "off";
-  return { good: "good", bad: o.reason === "missing" ? "missing" : "bad", ns: "ns", checked: "in", nophoto: "in", skipped: "cant" }[o.st] || "off";
+  return { good: "good", bad: o.reason === "missing" ? "missing" : "bad", ns: "ns", covered: "cant", checked: "in", nophoto: "in", skipped: "cant" }[o.st] || "off";
 }
+// COVERED on this board (a heatsink, a label...): shown as CAN'T BE SEEN, with what covers it
+const covNote = o => o && o.st === "covered" ? ` · covered: ${esc(o.cover || "heatsink")}` : "";
 const chip = (k, extra = "", cls = "") => `<span class="chip st-${k} ${cls}" title="${esc(STATUS[k].tip)}">${STATUS[k].t}${extra}</span>`;
 // what a count in the legend picks: "check" is everything in the check, answered or not
 const STAT_PICK = { all: () => true, check: k => k !== "off", in: k => k === "in", good: k => k === "good", wrong: k => k === "bad" || k === "missing", missing: k => k === "missing",
@@ -158,6 +160,7 @@ async function loadStatus(force = false) {
   return PS.wait;
 }
 const pstat = ref => ustat(PS.parts[ref]);
+const pchip = (ref, cls = "") => chip(pstat(ref), covNote(PS.parts[ref]), cls);
 
 // ---- photo viewers: wheel or pinch to zoom, drag to move, − + FIT 100% -------------------------
 // The stage is the photo at its own pixel size; a transform scales and moves it inside the viewer.
@@ -429,7 +432,7 @@ function renderParts() {
   if (S.project) loadPartList(S.project.uid);
   if (!$("#xp-kind").options.length) $("#xp-kind").innerHTML = kindOptions();
   $("#xp-list").innerHTML = (S.extras || []).length ? `<div class="lab">ADDED ONE BY ONE (${S.extras.length})</div>` : "";
-  $("#xp-list").innerHTML += (S.extras || []).map(x => `<div><span class="grow"><b>${esc(x.ref)}</b> ${chip(pstat(x.ref))} ${esc(KIND_NAMES[x.kind] || x.kind)} · ${x.side}
+  $("#xp-list").innerHTML += (S.extras || []).map(x => `<div><span class="grow"><b>${esc(x.ref)}</b> ${pchip(x.ref)} ${esc(KIND_NAMES[x.kind] || x.kind)} · ${x.side}
       <span class="dim">${esc(x.value || x.package)}${x.in_bom ? "" : " · not in the BOM"}${x.missing ? " · not in this design!" : ""} · ${x.good} good, ${x.bad} bad${x.wait && !(x.good + x.bad) ? " · waiting for a new photo" : ""}</span></span>
     <button class="small" data-xtrain="${esc(x.ref)}" data-side="${x.side}">TRAIN</button>
     <button class="small ${x.wait ? "on" : ""}" data-xwait="${esc(x.ref)}" title="Ask about it on the next check of its side until it's answered">WAIT FOR PHOTO</button>
@@ -457,7 +460,7 @@ const LINE_COLS = [
 // a part of a BOM line: the line's own status (fresh with the state), the answers from the viewer's status
 function lineStat(r) {
   const o = PS.parts[r.ref];
-  return o && (["good", "bad", "ns"].includes(o.st) || (r.status === "off" && o.st !== "off")) ? ustat(o) : ustat({ st: r.status });
+  return o && (["good", "bad", "ns", "covered"].includes(o.st) || (r.status === "off" && o.st !== "off")) ? ustat(o) : ustat({ st: r.status });
 }
 // a line's parts by side, counted by status, as chips
 function lineSummary(l) {
@@ -699,7 +702,7 @@ function renderSide(side) {
     $("#side-parts").innerHTML = shownRows(side).map(r => {
       const k = pstat(r.ref);
       return `<div data-ref="${esc(r.ref)}" class="${r.ref === sel ? "sel" : ""}" title="${esc((PS.parts[r.ref] || {}).why || r.reason || "")}"><span class="r">${esc(r.ref)}</span>
-        <span class="v grow ell">${esc(r.value || r.package || "")}${r.kind ? " · " + esc(KIND_NAMES[r.kind] || r.kind) : ""}</span>${newTag(r.ref)}${chip(k)}${k === "off" ? `<button class="small" data-add="${esc(r.ref)}" title="Put it in the check (Look only)">+ ADD</button>` : ""}</div>`;
+        <span class="v grow ell">${esc(r.value || r.package || "")}${r.kind ? " · " + esc(KIND_NAMES[r.kind] || r.kind) : ""}</span>${newTag(r.ref)}${pchip(r.ref)}${k === "off" ? `<button class="small" data-add="${esc(r.ref)}" title="Put it in the check (Look only)">+ ADD</button>` : ""}</div>`;
     }).join("") || `<div class="dim">No parts match.</div>`;
   }
   renderSel(side);
@@ -718,7 +721,9 @@ const designName = () => (S.group && S.group.name) || (S.project && S.project.bo
 function carryLine(d, inCheck, ans) {
   const g = esc(designName()), isRef = S.project && S.project.reference;
   if (d && d.ns === "all") return `Not stuffed on every ${g} board: it isn't asked about on any of them.`;
-  if (!inCheck) return `Answer it (GOOD, BAD, MISSING or NS) and it will be checked on every ${g} board from now on.`;
+  if (ans === "covered") return isRef ? `Covered on this reference, so its picture here isn't the standard: other ${g} boards still check it, against good answers from boards where it can be seen.`
+    : `Covered on this board only: not a fault, not asked about here. It is still checked on every other ${g} board.`;
+  if (!inCheck) return `Answer it (GOOD, BAD, MISSING, NS or COVERED) and it will be checked on every ${g} board from now on.`;
   let t = `This part is checked on every ${g} board.`;
   if (isRef && ans === "good") t += " This reference's picture of it is the standard.";
   if (isRef && (ans === "bad" || ans === "missing")) t += " The reference shows it wrong, so other boards are compared with good examples of it instead.";
@@ -739,7 +744,7 @@ function drawParts(side) {
   let polys = "", labels = "";
   for (const [r] of rows) {
     const k = pstat(r.ref), dim = filtered && !shown.has(r.ref) && r.ref !== sel ? " dimmed" : "";
-    polys += `<polygon data-ref="${esc(r.ref)}" class="st-${k}${dim}${r.ref === sel ? " sel" : ""}" style="stroke:${STATUS_COL[k]}" points="${r.poly.map(q => q.join(",")).join(" ")}"><title>${esc(r.ref)} · ${STATUS[k].t}${(PS.parts[r.ref] || {}).why ? " · " + esc(PS.parts[r.ref].why) : ""}</title></polygon>`;
+    polys += `<polygon data-ref="${esc(r.ref)}" class="st-${k}${dim}${r.ref === sel ? " sel" : ""}" style="stroke:${STATUS_COL[k]}" points="${r.poly.map(q => q.join(",")).join(" ")}"><title>${esc(r.ref)} · ${STATUS[k].t}${covNote(PS.parts[r.ref])}${(PS.parts[r.ref] || {}).why ? " · " + esc(PS.parts[r.ref].why) : ""}</title></polygon>`;
     if (k !== "off" || r.ref === sel) {
       const x = Math.min(...r.poly.map(q => q[0])), y = Math.min(...r.poly.map(q => q[1]));
       labels += `<text class="${dim}" x="${x}" y="${y}" dy="-0.35em" style="fill:${r.ref === sel ? "var(--st-sel)" : STATUS_COL[k]}">${esc(r.ref)}</text>`;
@@ -790,18 +795,27 @@ async function selectPart(side, ref, scroll = true) {
   if (SEL.ref === ref && SEL.side === side) { SEL.d = d; if (tab === side) renderSel(side); }
 }
 const lookAt = (side, ref) => selectPart(side, ref);
-// what was answered on this board's photo: GOOD, BAD, MISSING or NS
-function selAnswer(d, k) {
-  if (d && !d.error) return d.ns ? "ns" : d.taught ? (d.taught.label === "good" ? "good" : d.taught.reason === "missing" ? "missing" : "bad") : null;
+// what was answered on this board's photo: GOOD, BAD, MISSING, NS or COVERED
+function selAnswer(d, k, o) {
+  if (d && !d.error) return d.ns ? "ns" : d.covered ? "covered" : d.taught ? (d.taught.label === "good" ? "good" : d.taught.reason === "missing" ? "missing" : "bad") : null;
+  if (o && o.st === "covered") return "covered";
   return ["good", "bad", "missing", "ns"].includes(k) ? k : null;
 }
+// what covers a part: one click picks one, or type your own
+function coverPick(cur, attr) {
+  const rs = Object.entries((PL.cover_reasons && Object.keys(PL.cover_reasons).length ? PL.cover_reasons : S && S.cover_reasons) || { heatsink: "heatsink" });
+  return `<div class="answers"><span class="lab">COVERED BY</span>${rs.map(([r, t]) => `<button class="small a-covered ${cur === r ? "on" : ""}" ${attr}="${esc(r)}">${esc(t.toUpperCase())}</button>`).join("")}
+    <input class="note cover-own" placeholder="or type what covers it" value="${esc(cur && !rs.some(([r]) => r === cur) ? cur : "")}"></div>`;
+}
+// the check thinks it looks covered, as on another board: one click says so
+const coverHint = (sug, what, attr) => sug === "covered" ? `<button class="a-covered hint" ${attr}="${esc(what || "heatsink")}" title="It looks like a part answered COVERED on another board">LOOKS COVERED (${esc((what || "heatsink").toUpperCase())}?): CONFIRM</button>` : "";
 function renderSel(side) {
   const el = $("#sel-part"), ref = ui.look[side], st = S.sides[side];
   el.hidden = !ref || !st || !st.aligned || !!ui.closeup;
   if (el.hidden) { el.innerHTML = ""; $("#side-col").style.setProperty("--selh", "0px"); return; }
   const row = sideRows(side).find(r => r.ref === ref) || {}, o = PS.parts[ref] || {}, k = pstat(ref);
   const d = SEL.d && SEL.d.ref === ref && SEL.side === side ? SEL.d : null, ok = d && !d.error;
-  const src = sideSrc(side), v = st.stamp || "", ans = selAnswer(d, k), inCheck = k !== "off";
+  const src = sideSrc(side), v = st.stamp || "", ans = selAnswer(d, k, o), inCheck = k !== "off";
   const rows = shownRows(side), i = rows.findIndex(r => r.ref === ref);
   const kind = (ok && d.kind) || row.kind;
   const what = [ok ? d.value : row.value, kind ? KIND_NAMES[kind] || kind : "not in the check", ok ? d.package : row.package, ok && d.description].filter(Boolean).map(esc).join(" · ");
@@ -809,7 +823,7 @@ function renderSel(side) {
   // on the reference, NS is for every board of the design unless said otherwise
   const isRef = !!(S.project && S.project.reference), nsMain = isRef ? "nsall" : "ns", nsOther = isRef ? "nsone" : "nsall";
   const nsOn = ok && (isRef ? d.ns === "all" : d.ns === "board");
-  el.innerHTML = `<div class="head"><span class="ref">${esc(ref)}</span>${chip(k, "", "big solid")}<span class="grow"></span>
+  el.innerHTML = `<div class="head"><span class="ref">${esc(ref)}</span>${chip(k, covNote(o), "big solid")}<span class="grow"></span>
       <button class="small" data-a="prev" title="The part before in the list (key ↑)">‹</button><span class="dim" style="margin:0">${i >= 0 ? `${i + 1} of ${rows.length}` : ""}</span>
       <button class="small" data-a="next" title="The next part in the list (key ↓)">›</button><button class="small" data-a="close" title="Clear the selection (Esc)">✕</button></div>
     <div class="what">${what}${ok && !d.in_bom ? " · not in the BOM" : ""}</div>
@@ -819,12 +833,14 @@ function renderSel(side) {
     <div class="opinions">
       <div class="op" title="${esc(ok ? d.why || "" : "")}"><b>THE CHECK</b> ${!d ? "Looking..." : d.error ? `<span class="st-bad">${esc(d.error)}</span>` : `<span class="verdict v-${d.verdict}">${VERDICT_TEXT[d.verdict] || d.verdict}</span> ${esc(d.why || o.why || "")}`}</div>
       ${ok && d.model_text ? `<div class="op" title="${esc(d.model_text)}"><b>THE MODELS</b> ${esc(d.model_text)}</div>` : ""}
+      ${ok && !d.covered ? coverHint(d.suggest, d.cover, "data-cover") : ""}
     </div>
     <div class="answers">
       <button data-a="good" class="a-good ${ans === "good" ? "on" : ""}" title="It's right (key G)${inCheck ? "" : "; puts it in the check"}">GOOD</button>
       <button data-a="bad" class="a-bad ${ans === "bad" ? "on" : ""}" title="It's wrong: pick why (key B)">BAD${ans === "bad" && ok && d.taught && d.taught.reason ? ": " + esc((PL.reasons[d.taught.reason] || d.taught.reason).toUpperCase()) : ""}</button>
       <button data-a="missing" class="a-missing ${ans === "missing" ? "on" : ""}" title="It should be there but isn't: a fault (key M)">MISSING</button>
       <button data-a="${nsMain}" class="a-ns ${ans === "ns" ? "on" : ""}" title="${isRef ? "Not stuffed on every board of this design: this is the reference" : "Not stuffed: left off this board on purpose, not a fault"} (key N)">NS${isRef ? " ON EVERY BOARD" : ""}</button>
+      <button data-a="covered" class="a-covered ${ans === "covered" ? "on" : ""}" title="Can't be seen on this board (a heatsink, a label...): not a fault, and still checked on every other board. Press again to undo (key C)">COVERED${ans === "covered" && ok ? ": " + esc((d.covered || "").toUpperCase()) : ""}</button>
       ${ans ? `<button data-a="undo" title="Take the answer back">UNDO</button>` : ""}
       <details class="more"><summary>MORE</summary><div class="menu">
         ${isRef ? `<button data-a="nsone" class="${ok && d.ns === "board" ? "on" : ""}">${ok && d.ns === "board" ? "NS ON THIS BOARD ONLY ✓ (UNDO)" : "NS ON THIS BOARD ONLY"}</button>`
@@ -834,12 +850,13 @@ function renderSel(side) {
     </div>
     ${ui.badPick ? `<div class="answers"><span class="lab">WHY BAD?</span>${reasons.map(([r, t]) => `<button class="small a-bad" data-reason="${esc(r)}">${esc(t.toUpperCase())}</button>`).join("")}
       <input class="note" id="sel-note" placeholder="Note (optional)" value="${esc(ok && d.note || "")}"></div>` : ""}
+    ${ans === "covered" && ok ? coverPick(d.covered, "data-cover") : ""}
     <div class="carry">${o.new ? `<span class="newtag">NEW SINCE LAST CHECK</span> ` : ""}${carryLine(ok ? d : null, inCheck, ans)}</div>
     <div class="addrow">${inCheck
       ? `<span class="dim grow">${ok && d.extra ? "Added one by one" : "In the check"}${kind ? " as " + esc(KIND_NAMES[kind] || kind) : ""}</span><button class="small" data-a="remove">TAKE OUT</button>
         <button class="small accent" data-a="todo" title="The next part in the check with no answer (key Space)">NEXT NOT ANSWERED ›</button>`
       : `<span class="dim grow">Not in the check${o.why && o.why !== "not in the check" ? ": " + esc(o.why) : ""}</span><select id="sel-kind" title="Check it as">${kindOptions()}</select><button class="accent" data-a="add" title="Key A">+ ADD TO THE CHECK</button>`}</div>
-    <div class="dim keys">Keys: G good · B bad · M missing · N NS · A add · ↑↓ step · Space next not answered · Esc</div>`;
+    <div class="dim keys">Keys: G good · B bad · M missing · N NS · C covered · A add · ↑↓ step · Space next not answered · Esc</div>`;
   $("#side-col").style.setProperty("--selh", el.offsetHeight + 8 + "px");
 }
 // step through the list as shown: dir +1/-1, or the next part in the check not answered yet
@@ -873,8 +890,13 @@ async function selDo(side, a, extra = {}) {
       SEL.d = await post("api/part/ns", { src, ref, on, all: every });
       done = !on ? `${ref}: NS undone, it's checked again.` : every ? `${ref}: not stuffed on every ${designName()} board.`
         : `${ref}: not stuffed on this board. It will be checked on every other ${designName()} board.`;
+    } else if (a === "covered") {      // pressed again: undone; extra.reason: covered by that
+      const on = !!extra.reason || !(d && d.covered), reason = extra.reason || "heatsink";
+      SEL.d = await post("api/part/covered", { src, ref, on, reason });
+      done = !on ? `${ref}: COVERED undone, it's checked again.` : `${ref}: covered (${reason}) on this board. Not a fault; it is still checked on every other ${designName()} board.`;
     } else if (a === "undo") {
       if (d && d.ns) SEL.d = await post("api/part/ns", { src, ref, on: false });
+      else if (d && d.covered) SEL.d = await post("api/part/covered", { src, ref, on: false });
       else if (d && d.taught) await post(`api/check/learned/${encodeURIComponent(d.board)}/${side}/delete`, { id: d.taught.id });
       done = `${ref}: answer taken back.`;
     } else if (a === "add") {
@@ -899,15 +921,19 @@ async function selDo(side, a, extra = {}) {
   await refreshState();
   selectPart(side, ref, false);
 }
+$("#sel-part").addEventListener("change", e => {
+  const i = e.target.closest(".cover-own"); if (i && i.value.trim()) selDo(tab, "covered", { reason: i.value.trim() });
+});
 $("#sel-part").addEventListener("click", e => {
   const r = e.target.closest("[data-reason]"); if (r) return selDo(tab, "bad", { reason: r.dataset.reason });
+  const c = e.target.closest("[data-cover]"); if (c) return selDo(tab, "covered", { reason: c.dataset.cover });
   const b = e.target.closest("[data-a]"); if (b) selDo(tab, b.dataset.a);
 });
 document.addEventListener("keydown", e => {
   if ((tab !== "front" && tab !== "back") || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, select, textarea")) return;
   const side = tab, k = e.key, on = !!ui.look[side];
   const keys = { ArrowDown: "next", ArrowRight: "next", ArrowUp: "prev", ArrowLeft: "prev", " ": "todo", Escape: "close", g: "good", b: "bad", m: "missing",
-    n: S.project && S.project.reference ? "nsall" : "ns", a: "add" };
+    n: S.project && S.project.reference ? "nsall" : "ns", c: "covered", a: "add" };
   if (k === "0") return ZS.fit();
   if (!keys[k] && !keys[k.toLowerCase()]) return;
   const a = keys[k] || keys[k.toLowerCase()];
@@ -1108,13 +1134,13 @@ $("#ghost-on").addEventListener("change", e => { ui.ghostOn = e.target.checked; 
 // ---- looking at one part on a photo, and teaching the check -------------------------------
 // Used on the Front/Back tabs (the mapped photo), Check a board (the lined-up photo of the board
 // checked) and the Parts tab (any photo of the board). src names the photo, see teach.py.
-const PL = { uid: null, parts: [], reasons: {} };
+const PL = { uid: null, parts: [], reasons: {}, cover_reasons: {} };
 async function loadPartList(uid) {
   if (!uid || PL.uid === uid) return;
   PL.uid = uid;
   try {
     const r = await api(`api/part/list?uid=${encodeURIComponent(uid)}`);
-    PL.parts = r.parts; PL.reasons = r.reasons;
+    PL.parts = r.parts; PL.reasons = r.reasons; PL.cover_reasons = r.cover_reasons || {};
     $("#dl-parts").innerHTML = r.parts.map(p => `<option value="${esc(p.ref)}">${esc([p.value, p.description, p.package].filter(Boolean).join(" · "))}${p.kind ? "" : p.in_bom ? " (not in the check)" : " (not in the BOM)"}</option>`).join("");
   } catch (e) { PL.uid = null; say(e.message, true); }
 }
@@ -1127,7 +1153,7 @@ function typedRef(text) {
   const byVal = PL.parts.filter(p => (p.value || "").toLowerCase() === text.trim().toLowerCase());
   return byVal.length ? byVal[0].ref : t;
 }
-const VERDICT_TEXT = { correct: "LOOKS RIGHT", wrong: "LOOKS WRONG", unsure: "NOT SURE", skipped: "NOT COMPARED", reference: "REFERENCE PHOTO", ns: "NOT STUFFED" };
+const VERDICT_TEXT = { correct: "LOOKS RIGHT", wrong: "LOOKS WRONG", unsure: "NOT SURE", skipped: "NOT COMPARED", reference: "REFERENCE PHOTO", ns: "NOT STUFFED", covered: "CAN'T BE SEEN" };
 const partCrop = (src, ref, which, v) => `api/part/crop?src=${encodeURIComponent(src)}&ref=${encodeURIComponent(ref)}&which=${which}&v=${v || ""}`;
 function reasonSelect(cls, cur) {
   const rs = Object.keys(PL.reasons).length ? PL.reasons : (S && S.reasons) || {};
@@ -1140,29 +1166,43 @@ async function showPart(el, src, ref, after) {
   try { d = await api(`api/part/info?src=${encodeURIComponent(src)}&ref=${encodeURIComponent(ref)}`); }
   catch (e) { el.innerHTML = `<div class="warn">${esc(e.message)}</div>`; return; }
   const v = Date.now(), ans = d.answer;
-  const a = d.ns === "board" ? "ns" : ans === "correct" ? "good" : ans === "wrong" ? (d.reason === "missing" ? "missing" : "bad") : selAnswer({ taught: d.taught }, null);
+  const a = d.ns === "board" ? "ns" : d.covered ? "covered" : ans === "correct" ? "good" : ans === "wrong" ? (d.reason === "missing" ? "missing" : "bad") : selAnswer({ taught: d.taught }, null);
   el.innerHTML = `<div class="insp">
     <div><b style="font-size:17px">${esc(d.ref)}</b> ${d.in_check ? esc(KIND_NAMES[d.kind] || d.kind) : chip("off")} · ${esc(d.value || "")}
       ${d.description ? `<span class="dim">${esc(d.description)}</span>` : ""} <span class="dim">${esc(d.package || "")}${d.in_bom ? "" : " · not in the BOM"}</span></div>
-    <div class="row"><span class="verdict v-${d.verdict}">${VERDICT_TEXT[d.verdict] || d.verdict}</span><span class="dim grow">${esc(d.why)}</span></div>
+    <div class="row"><span class="verdict v-${d.verdict}">${VERDICT_TEXT[d.verdict] || d.verdict}</span><span class="dim grow">${esc(d.why)}</span>${d.covered ? "" : coverHint(d.suggest, d.cover, "data-tcover")}</div>
     <div class="pics"><figure><img src="${partCrop(src, d.ref, "board", v)}" alt="">${esc(d.label)}</figure>
       ${d.reference && !d.verdict.startsWith("ref") ? `<figure><img src="${partCrop(src, d.ref, "reference", v)}" alt="">reference</figure>` : ""}</div>
     ${modelLine(d)}
     <div class="dim">Learned so far: ${d.good} good, ${d.bad} bad${d.pending ? " · waiting for a new photo to be taught on" : ""}${ans ? ` · this board answered ${ans === "correct" ? "GOOD" : "BAD"}` : ""}</div>
-    <div class="carry">${d.ns === "all" ? "Not stuffed on every board of this design." : d.in_check ? "This part is checked on every board of this design." : "Answer it and it will be checked on every board of this design from now on."}</div>
+    <div class="carry">${d.ns === "all" ? "Not stuffed on every board of this design." : d.covered ? "Covered on this board only: not a fault. It is still checked on every other board of this design." : d.in_check ? "This part is checked on every board of this design." : "Answer it and it will be checked on every board of this design from now on."}</div>
     <div class="answers">
       <button data-t="good" class="a-good ${a === "good" ? "on" : ""}">GOOD</button><button data-t="bad" class="a-bad ${a === "bad" ? "on" : ""}">BAD</button>
       <button data-t="missing" class="a-missing ${a === "missing" ? "on" : ""}" title="It should be there but isn't: a fault, kept as a bad example">MISSING</button>
       <button data-t="ns" class="a-ns ${a === "ns" ? "on" : ""}" title="Not stuffed: left off this board on purpose, not a fault. Press again to undo">NS</button>
+      <button data-t="covered" class="a-covered ${a === "covered" ? "on" : ""}" title="Can't be seen on this board (a heatsink, a label...): not a fault, still checked on every other board. Press again to undo">COVERED${d.covered ? ": " + esc(d.covered.toUpperCase()) : ""}</button>
       <details class="more"><summary>MORE</summary><div class="menu">
         <button data-t="nsall" class="${d.ns === "all" ? "on" : ""}" title="Not stuffed on every board of this design from now on. Press again to undo">${d.ns === "all" ? "NS ON EVERY BOARD ✓ (UNDO)" : "NS ON EVERY BOARD OF THIS DESIGN"}</button>
         ${d.in_check && !d.extra ? "" : `<button data-t="wait" class="${d.wait ? "on" : ""}">${d.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO"}</button>`}</div></details></div>
+    ${d.covered ? coverPick(d.covered, "data-tcover") : ""}
     <div class="row">${reasonSelect("t-reason", d.reason)}<input class="note t-note" value="${esc(d.note || "")}" placeholder="Note (kept with the example)"></div>
     ${d.in_check ? "" : `<div class="row"><select class="t-kind" title="What kind of part to check it as">${kindOptions()}</select><button data-t="add" class="accent">+ ADD TO THE CHECK</button></div>`}
-    ${d.examples.length ? `<div class="dim">${d.examples.map(e => `<span class="${e.label === "good" ? "st-ok" : "st-wrong"}">${e.label.toUpperCase()}</span>${e.reason ? " " + esc(PL.reasons[e.reason] || e.reason) : ""}${e.note ? " · " + esc(e.note) : ""} <span class="dim">${esc(e.serial || "")} ${esc(e.date)}</span>`).join("<br>")}</div>` : ""}
+    ${d.examples.length ? `<div class="dim">${d.examples.map(e => `<span class="${e.label === "good" ? "st-ok" : e.label === "covered" ? "st-cant" : "st-wrong"}">${e.label.toUpperCase()}</span>${e.reason ? " " + esc(PL.reasons[e.reason] || e.reason) : ""}${e.note ? " · " + esc(e.note) : ""} <span class="dim">${esc(e.serial || "")} ${esc(e.date)}</span>`).join("<br>")}</div>` : ""}
   </div>`;
+  const cover = async (on, reason) => {
+    try {
+      await post("api/part/covered", { src, ref: d.ref, on, reason });
+      say(on ? `${d.ref}: covered (${reason}) on this board. Not a fault; it is still checked on every other board.` : `${d.ref}: COVERED undone, it's checked again.`);
+      PL.uid = null;
+      if (after) await after(d.ref);
+      showPart(el, src, d.ref, after);
+    } catch (err) { say(err.message, true); }
+  };
+  el.onchange = e => { const i = e.target.closest(".cover-own"); if (i && i.value.trim()) cover(true, i.value.trim()); };
   el.onclick = async e => {
+    const tc = e.target.closest("[data-tcover]"); if (tc) return cover(true, tc.dataset.tcover);
     const b = e.target.closest("[data-t]"); if (!b) return;
+    if (b.dataset.t === "covered") return cover(!d.covered, "heatsink");
     const kind = $(".t-kind", el) ? $(".t-kind", el).value : null;
     try {
       if (b.dataset.t === "ns" || b.dataset.t === "nsall") {
@@ -1275,7 +1315,7 @@ function renderReview() {
         <div class="chips">${r.kinds.map(k => `<span class="chip st-in">${esc(c.kinds_text[k].toUpperCase())}</span>`).join("")}</div>
         <div class="dim">${esc(r.why)}</div>
         ${r.model_old || r.model_new ? `<div class="dim">Models think: old ${esc(r.model_old || "–")} · new ${esc(r.model_new || "–")}</div>` : ""}
-        <div class="answers">${Object.entries(c.choices).map(([k, t]) => `<button data-rv="${k}" data-key="${esc(r.key)}" class="${k === "accept" ? "a-good" : k === "wrong" ? "a-bad" : k === "ns" ? "a-ns" : ""} ${d && d.choice === k ? "on" : ""}" ${open ? "" : "disabled"}>${esc(t)}</button>`).join("")}</div></div></div>`; }).join("")
+        <div class="answers">${Object.entries(c.choices).map(([k, t]) => `<button data-rv="${k}" data-key="${esc(r.key)}" class="${k === "accept" ? "a-good" : k === "wrong" ? "a-bad" : k === "ns" ? "a-ns" : ""} ${d && d.choice === k ? "on" : ""}" ${open ? "" : "disabled"}>${esc(t)}${d && d.choice === k && d.default ? " (SUGGESTED)" : ""}</button>`).join("")}</div></div></div>`; }).join("")
     || `<p class="dim" style="margin:12px">${c.building ? "Comparing..." : c.rows.length ? "Nothing in this list." : "No differences: finish to switch over."}</p>`;
 }
 $("#rv-filter").addEventListener("click", e => { const b = e.target.closest("[data-f]"); if (b) { RV.filter = b.dataset.f; renderReview(); } });
@@ -1603,7 +1643,7 @@ function bvInfo() {
     const st = BV.st[p.r] || { st: "off", why: "" }, ln = p.l ? g.lines[p.l] : null, side = sideOf(p), k = ustat(st);
     const kind = st.kind ? KIND_NAMES[st.kind] || st.kind : null;
     const aligned = S.sides[side] && S.sides[side].aligned;
-    html += `<div class="selpanel" style="position:static"><div class="head"><span class="ref">${esc(p.r)}</span>${p.f ? `<span class="chip st-off">FIDUCIAL</span>` : chip(k, "", "big solid")}</div>
+    html += `<div class="selpanel" style="position:static"><div class="head"><span class="ref">${esc(p.r)}</span>${p.f ? `<span class="chip st-off">FIDUCIAL</span>` : chip(k, covNote(st), "big solid")}</div>
       <div class="what">${esc(p.v || "")} · ${kind ? esc(kind) : p.f ? "used to line the photo up" : "not in the check"} · ${esc(p.k)} · ${side}</div>
       <div class="kv">
         <b>BOM line</b><span>${ln ? `${esc(ln.value || "")} ${ln.description ? `<span class="dim">${esc(ln.description)}</span>` : ""} · ${plural(ln.qty, "part")}${ln.dnp ? " · DNP" : ""}` : `<span class="dim">not in the BOM</span>`}</span>
@@ -1812,8 +1852,8 @@ async function loadChecks() {
 }
 
 const reasonName = k => (PL.reasons[k] || (S && S.reasons && S.reasons[k]) || k);
-const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it", fault: "known fault", ns: "not stuffed" };
-const FINE = r => r.status === "ok" || r.status === "ns";     // needs no answer
+const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated: "looks turned", check: "look at it", fault: "known fault", ns: "not stuffed", covered: "covered" };
+const FINE = r => r.status === "ok" || r.status === "ns" || r.status === "covered";     // needs no answer
 const ckFile = (uid, side, name, extra = "") => `api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
 const ckCrop = (uid, side, ref, which) => `api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
 // a part of a board check, in the words and colours used everywhere
@@ -1821,6 +1861,7 @@ function ckChip(r) {
   if (r.answer === "correct") return chip("good", "", "solid");
   if (r.answer === "wrong") return chip(r.reason === "missing" ? "missing" : "bad", "", "solid");
   if (r.status === "ns") return chip("ns");
+  if (r.status === "covered") return chip("cant", ` · covered: ${esc(r.cover || "heatsink")}`);
   if (r.missed) return `<span class="chip st-bad">MISSED BY THE CHECK</span>`;
   if (r.new) return `<span class="chip st-in">NEW PART, TEACH ME</span>`;
   if (r.since) return `<span class="chip st-in" title="Put in the check (answered on another board of the design) after this board was checked">NEW SINCE LAST CHECK</span>`;
@@ -1832,19 +1873,20 @@ function ckLegend(s) {
   $("#ck-legend").innerHTML = !s.aligned ? "" : `<span class="count all"><b>${rs.length}</b><span>parts checked</span></span>`
     + item("in", n(r => !FINE(r) && !r.answer), "to look at") + item("good", n(r => r.answer === "correct" || (r.status === "ok" && !r.answer)), "good")
     + item("bad", n(r => r.answer === "wrong" && r.reason !== "missing"), "bad") + item("missing", n(r => r.answer === "wrong" && r.reason === "missing"), "missing")
-    + item("ns", n(r => r.status === "ns"), "NS") + item("cant", (s.skipped || []).length, "can't be seen");
+    + item("ns", n(r => r.status === "ns"), "NS") + item("cant", (s.skipped || []).length + n(r => r.status === "covered"), "can't be seen");
 }
 function flaggedHtml(c, side, editable) {
   const st = c.sides[side] || {}, rs = (st.results || []).filter(r => !FINE(r) || r.missed);
   return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
       <div class="row tight" style="gap:8px"><b style="font-size:17px">${esc(r.ref)}</b>${ckChip(r)}<span class="dim ell" style="margin:0">${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)}</span></div><div>
-        <div class="dim">${esc(r.why || "")}</div>${modelLine(r)}</div>
+        <div class="dim">${esc(r.why || "")}</div>${modelLine(r)}${editable ? coverHint(r.suggest, r.cover, `data-ref="${esc(r.ref)}" data-cov`) : ""}</div>
       <div class="pics"><figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "reference")}" alt="">reference</figure>
         <figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "board")}" alt="">this board</figure></div>
       ${editable ? `<div class="answers">${r.missed ? "" : `<button data-ans="correct" data-ref="${esc(r.ref)}" class="a-good ${r.answer === "correct" ? "on" : ""}" title="It's right: the right way round">GOOD</button>`}
         <button data-ans="wrong" data-ref="${esc(r.ref)}" class="a-bad ${r.answer === "wrong" && r.reason !== "missing" ? "on" : ""}" title="It's wrong (pick why beside)">BAD</button>
         <button data-ans="missing" data-ref="${esc(r.ref)}" class="a-missing ${r.answer === "wrong" && r.reason === "missing" ? "on" : ""}" title="It should be there but isn't: a fault">MISSING</button>
         ${r.missed ? "" : `<button data-ns="board" data-ref="${esc(r.ref)}" class="a-ns" title="Not stuffed: left off this board on purpose, not a fault">NS</button>
+        <button data-cov="heatsink" data-ref="${esc(r.ref)}" class="a-covered" title="Can't be seen on this board (a heatsink, a label...): not a fault, still checked on every other board">COVERED</button>
         <details class="more"><summary>MORE</summary><div class="menu"><button data-ns="all" data-ref="${esc(r.ref)}" title="Not stuffed on every board of this design from now on">NS ON EVERY BOARD</button></div></details>`}</div>
         <div class="row">${reasonSelect("reason", r.reason).replace("<select ", `<select data-reason="${esc(r.ref)}" `)}
         <input class="note" data-note="${esc(r.ref)}" value="${esc(r.note || "")}" placeholder="Note (kept with the example)"></div>
@@ -1874,6 +1916,8 @@ async function showCheck(uid) {
     <h3>RESULT PHOTOS</h3>
     <div class="gallery">${sides.filter(s => c.sides[s].aligned).map(s => `<a href="${ckFile(uid, s, "result.jpg")}" target="_blank" rel="noopener"><img loading="lazy" src="${ckFile(uid, s, "result.jpg", `?thumb=360&v=${encodeURIComponent(c.updated)}`)}" alt=""><span>${s}</span></a>`).join("") || `<p class="dim">No side was lined up.</p>`}</div>
     ${sides.map(s => { const h = flaggedHtml(c, s, false); return h ? `<h3>FLAGGED ON THE ${s.toUpperCase()}</h3>${h}` : ""; }).join("")}
+    ${sides.map(s => { const cv = (c.sides[s].results || []).filter(r => r.status === "covered"); return cv.length ? `<h3>COVERED ON THE ${s.toUpperCase()}</h3>
+      <p class="dim">${cv.map(r => `<b>${esc(r.ref)}</b> ${chip("cant", ` · covered: ${esc(r.cover || "heatsink")}`)}`).join(" ")}</p>` : ""; }).join("")}
     <h3>LOG</h3>
     <div class="list log">${c.log.map(e => `<div><span class="dim">${esc(e.at)}</span><span class="grow">${esc(e.what)}</span></div>`).join("")}</div>`;
 }
@@ -1916,7 +1960,7 @@ async function showLearned(board) {
   $("#hist-detail").innerHTML = `
     <h2>WHAT THE CHECK HAS LEARNED  ·  ${esc(board)}</h2>
     <div class="row"><div class="seg" id="lr-side">${["front", "back"].map(s => `<button data-s="${s}" class="${s === side ? "on" : ""}">${s.toUpperCase()}</button>`).join("")}</div>
-      <span class="dim">${d.examples.filter(e => e.label === "good").length} good · ${d.examples.filter(e => e.label === "bad").length} bad</span></div>
+      <span class="dim">${d.examples.filter(e => e.label === "good").length} good · ${d.examples.filter(e => e.label === "bad").length} bad${d.examples.some(e => e.label === "covered") ? ` · ${d.examples.filter(e => e.label === "covered").length} covered` : ""}</span></div>
     <p class="dim">Each answer on Check a board, and each part taught GOOD or BAD from a photo, is kept here: a good example, or a bad one
       with its reason and note. Later boards of this design are compared with these as
       well as the reference: a part like a good example isn't flagged again, and one like a bad example is flagged as a <b>known fault</b>.
@@ -1925,8 +1969,8 @@ async function showLearned(board) {
       ${wrong.map(([ref, rs]) => `<div class="row"><span class="dim">reference ${esc(ref)}:</span>${rs.map(r => `<button data-trust="${esc(r)}" data-reference="${esc(ref)}" title="Trust the reference for this part again">${esc(r)} ✕</button>`).join("")}</div>`).join("")}` : ""}
     ${refs.length ? refs.map(ref => `<h3>${esc(ref)} <span class="dim">${byRef[ref].length} example(s)</span></h3><div class="examples">${byRef[ref].map(e => `
       <div class="ex ${e.label}"><img loading="lazy" src="${exUrl(board, side, e.id)}" alt="${esc(e.ref)}, ${e.label}">
-        <div class="grow"><span class="${e.label === "good" ? "st-ok" : "st-wrong"}">${e.label === "good" ? "GOOD · right way round" : "BAD · wrong"}</span>
-          ${e.reason ? `<div class="st-wrong">${esc(reasonName(e.reason))}</div>` : ""}${e.note ? `<div>${esc(e.note)}</div>` : ""}
+        <div class="grow"><span class="${e.label === "good" ? "st-ok" : e.label === "covered" ? "st-cant" : "st-wrong"}">${e.label === "good" ? "GOOD · right way round" : e.label === "covered" ? `COVERED · ${esc(e.note || "heatsink")} (only used to ask "covered?" on later boards)` : "BAD · wrong"}</span>
+          ${e.reason ? `<div class="st-wrong">${esc(reasonName(e.reason))}</div>` : ""}${e.note && e.label !== "covered" ? `<div>${esc(e.note)}</div>` : ""}
           <div class="dim">${esc(e.serial || "no serial")} · ${esc(e.date)}${e.check ? ` · <a href="#" data-showck="${esc(e.check)}">check</a>` : e.source ? " · taught from a mapped photo" : ""}</div></div>
         <button data-delex="${esc(e.id)}" class="small">DELETE</button></div>`).join("")}</div>`).join("")
       : `<p class="dim">Nothing learned for the ${side} yet. Answer the flagged parts on Check a board and they appear here.</p>`}
@@ -2060,7 +2104,8 @@ function renderCheck() {
     const fl = flaggedHtml(c, CK.side, true);
     $("#ck-flagged").innerHTML = s.aligned ? (fl ? `<h3>FLAGGED: LOOK AT EACH ONE</h3>${fl}` : `<p class="st-ok">Nothing flagged on the ${CK.side}.</p>`) : "";
     const ok = (s.results || []).filter(r => r.status === "ok" && !r.missed);
-    const byLearning = ok.filter(r => r.learned === "good").map(r => r.ref), ns = (s.results || []).filter(r => r.status === "ns");
+    const byLearning = ok.filter(r => r.learned === "good").map(r => r.ref), ns = (s.results || []).filter(r => r.status === "ns"),
+      cov = (s.results || []).filter(r => r.status === "covered");
     const since = ok.filter(r => r.since).map(r => r.ref);
     $("#ck-ok").innerHTML = s.aligned ? `<h3>GOOD: THE RIGHT WAY ROUND (${ok.length})</h3><p class="dim">${esc(ok.map(r => r.ref).join(", ") || "none")}</p>` +
       (byLearning.length ? `<p class="dim">Passed because they look like parts a tester confirmed: ${esc(byLearning.join(", "))}.</p>` : "") +
@@ -2068,6 +2113,8 @@ function renderCheck() {
       (ok.length ? `<h3>DID THE CHECK MISS ONE?</h3><p class="dim">If one of these is wrong, flag it: it's kept as a bad example, and the reference's look of that part is no longer trusted.</p>
         <div class="row"><select id="ck-miss-ref">${ok.map(r => `<option>${esc(r.ref)}</option>`).join("")}</select>
         ${reasonSelect("reason").replace("<select ", `<select id="ck-miss-reason" `)}<input id="ck-miss-note" class="note" placeholder="Note (kept with the example)"><button id="ck-miss" class="a-bad">FLAG AS BAD</button></div>` : "") +
+      (cov.length ? `<h3>COVERED ON THIS BOARD (${cov.length})</h3><p class="dim">Can't be seen on this board, not faults. Still checked on every other board.</p>` +
+        cov.map(r => `<div class="row"><b>${esc(r.ref)}</b>${chip("cant", ` · covered: ${esc(r.cover || "heatsink")}`)}<span class="grow"></span><button data-uncov="${esc(r.ref)}">UNDO COVERED</button></div>`).join("") : "") +
       (ns.length ? `<h3>NOT STUFFED (${ns.length})</h3><p class="dim">Left off on purpose, not faults.</p>` +
         ns.map(r => `<div class="row"><b>${esc(r.ref)}</b><span class="dim grow">${esc(r.why)}</span><button data-unns="${esc(r.ref)}">UNDO NS</button></div>`).join("") : "") +
       ((s.skipped || []).length ? `<h3>CAN'T BE SEEN (${s.skipped.length})</h3><p class="dim">Look at these by eye: ${esc(s.skipped.map(r => r.ref).join(", "))}.</p>` : "") : "";
@@ -2163,6 +2210,9 @@ $("#ck-view").addEventListener("click", e => { const b = e.target.closest("butto
 const ckNote = ref => { const i = $$("#ck-flagged [data-note]").find(x => x.dataset.note === ref); return i ? i.value : ""; };
 const ckReason = ref => { const i = $$("#ck-flagged [data-reason]").find(x => x.dataset.reason === ref); return i ? i.value : ""; };
 $("#ck-flagged").addEventListener("click", e => {
+  const cv = e.target.closest("[data-cov]");
+  if (cv) return ckAct(() => post(`api/check/side/${CK.side}/covered`, { ref: cv.dataset.ref, on: true, reason: cv.dataset.cov || "heatsink" }),
+    `${cv.dataset.ref}: covered (${cv.dataset.cov || "heatsink"}) on this board. Not a fault; still checked on every other board. Undo it under COVERED.`);
   const n = e.target.closest("[data-ns]");
   if (n) return ckAct(() => post(`api/check/side/${CK.side}/ns`, { ref: n.dataset.ref, on: true, all: n.dataset.ns === "all" }),
     `${n.dataset.ref}: not stuffed ${n.dataset.ns === "all" ? "on every board of this design" : "on this board"}. Undo it under NOT STUFFED.`);
@@ -2180,6 +2230,8 @@ $("#ck-flagged").addEventListener("change", e => {
   if (cur && cur.answer) ckAct(() => post(`api/check/side/${CK.side}/answer`, { ref, answer: cur.answer, note: ckNote(ref), reason: ckReason(ref), missed: !!cur.missed }), "Saved with the example.");
 });
 $("#ck-ok").addEventListener("click", e => {
+  const uc = e.target.closest("[data-uncov]");
+  if (uc) return ckAct(() => post(`api/check/side/${CK.side}/covered`, { ref: uc.dataset.uncov, on: false }), `${uc.dataset.uncov}: COVERED undone, it's checked again.`);
   const u = e.target.closest("[data-unns]");
   if (u) return ckAct(() => post(`api/check/side/${CK.side}/ns`, { ref: u.dataset.unns, on: false }), `${u.dataset.unns}: NS undone, it's checked again.`);
   if (!e.target.closest("#ck-miss")) return;

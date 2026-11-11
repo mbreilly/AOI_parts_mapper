@@ -108,7 +108,7 @@ _VERDICTS = {}      # (project, ref, photo stamp, examples time, reference) -> (
 
 def status(b) -> dict:
     """{ref: {"st", "why", "kind", "extra"}} for each part: "bad" / "good" (answered on this board's
-    photo), "ns" (not stuffed), "checked" (in the check and its photo shows it), "skipped" (in the
+    photo), "ns" (not stuffed), "covered" (can't be seen on this board: "cover" says what covers it), "checked" (in the check and its photo shows it), "skipped" (in the
     check but the photo can't show it), "nophoto" (in the check, its side has no lined-up photo) or
     "off" (not in the check)."""
     d = b.design
@@ -129,10 +129,13 @@ def status(b) -> dict:
                 out[r["ref"]].update(st="checked" if r["checkable"] or small else "skipped",
                                      why="small in the photo; checked because it has been answered" if small else r.get("reason") or "")
         if b.project:
+            cov = ck.covered(b.data, b.name, side, ck.ns_key(b.project.get("serial", ""), b.project["uid"]))
             for ref, ans in tl.answers(b.data, b.name, f"project/{b.project['uid']}/{side}").items():
                 if ref in out:
                     out[ref]["answer"] = ans
                     out[ref]["st"] = ans
+                    if ans == "covered":
+                        out[ref].update(cover=cov.get(ref, ""), why=ck.cover_why(cov.get(ref, "")))
             for e in ck.load_examples(b.data, b.name, side)["examples"]:
                 if e.get("source") == f"project/{b.project['uid']}/{side}" and e["ref"] in out and e["label"] == "bad":
                     out[e["ref"]]["reason"] = e.get("reason", "")

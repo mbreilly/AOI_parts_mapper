@@ -415,7 +415,7 @@ def make_handler(app: App):
             """Any part on any lined-up photo (see teach.py)."""
             data = app.board.data
             if r == ["list"]:
-                return self._json({"parts": tl.part_list(data, q["uid"]), "reasons": ck.REASONS})
+                return self._json({"parts": tl.part_list(data, q["uid"]), "reasons": ck.REASONS, "cover_reasons": ck.COVER_REASONS})
             if r == ["sources"]:
                 return self._json({"sources": tl.sources(data, q["board"], q["side"])})
             if r == ["info"]:
@@ -454,6 +454,16 @@ def make_handler(app: App):
                     app.checks.set_ns(side, ref, on, every)
                 else:
                     b.set_ns(src, ref, on, every)
+                return self._json(tl.inspect(data, src, ref))
+            if r == ["covered"]:   # can't be seen on this board (a heatsink...); on=false undoes it
+                src, ref, on, why = j["src"], j["ref"], j.get("on", True) is not False, j.get("reason") or "heatsink"
+                c = app.checks.cur
+                kind, uid, side = src.split("/") if src.count("/") == 2 else ("", "", "")
+                if kind == "check" and c and c["uid"] == uid and any(
+                        x["ref"] == ref for x in c["sides"].get(side, {}).get("results", [])):
+                    app.checks.set_covered(side, ref, on, why)
+                else:
+                    b.set_covered(src, ref, on, why)
                 return self._json(tl.inspect(data, src, ref))
             if r == ["extra"]:
                 b.set_extra(j["ref"], j.get("kind"), j.get("wait"), bool(j.get("remove")), j.get("board"))
@@ -515,6 +525,9 @@ def make_handler(app: App):
                 elif what == "ns":
                     j = self._jbody()
                     c.set_ns(side, j["ref"], j.get("on", True) is not False, bool(j.get("all")))
+                elif what == "covered":
+                    j = self._jbody()
+                    c.set_covered(side, j["ref"], j.get("on", True) is not False, j.get("reason") or "heatsink")
                 else:
                     return self._err("Not found", 404)
             elif len(r) == 4 and r[0] == "learned" and r[3] in ("delete", "trust"):

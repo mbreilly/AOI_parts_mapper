@@ -179,6 +179,16 @@ reference's look the standard; BAD or MISSING says the reference shows it wrong,
 good examples instead and aren't passed for matching the reference; NS there is offered for every board. The
 selected-part panel says in one line what will happen.
 
+**COVERED: can't be seen on this board.** When a heatsink, label, shield or cable hides a part on one board, answer
+**COVERED** (key C; heatsink unless another reason is picked or typed). It isn't a fault and isn't asked about on that
+board (shown CAN'T BE SEEN, "covered: heatsink"), but the part stays in the check and every other board still checks
+it. The covered picture is never a good or bad example: it is kept only as a "covered" look, so a later board that
+looks the same is asked **LOOKS COVERED (HEATSINK?): CONFIRM** instead of flagged as a wrong part. COVERED on the
+reference means its picture isn't the standard for that part: other boards are passed by GOOD answers from boards where
+it can be seen, or told there's no standard yet. Answering GOOD, BAD or MISSING, or pressing COVERED again, undoes it.
+Kept per board (serial) in `examples.json` and the `aoi_learned_covered` table. In **Review reference change**, a part
+covered on the new reference starts as **KEEP OLD**.
+
 **Changing the reference asks first.** Making another board the reference (Map tab or History), or replacing or
 lining up again the reference board's own photo, opens **Review reference change**: the new reference is compared
 part by part with the one in use (every part in the check, answered or learned, both sides, with the models'

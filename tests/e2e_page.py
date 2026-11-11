@@ -249,6 +249,46 @@ try:
         d7 = next(r for r in res["check"]["sides"]["front"]["results"] if r["ref"] == "D7")
         assert d7["status"] == "ok", d7
 
+        # ---- COVERED: a heatsink on C8 of the reference only; every other board still checks C8 -------
+        call(f"api/history/{ref_uid}/open", {})
+        pg.reload(); pg.wait_for_selector("#tab-files:not([hidden])")
+        pg.click("button[data-tab=front]"); pg.wait_for_selector("#side-parts div[data-ref='C8']")
+        n_cant = int(pg.inner_text("#side-legend [data-stat=cant] b"))
+        pg.click("#side-parts div[data-ref='C8']"); pg.wait_for_selector("#sel-part [data-a=covered]")
+        pg.wait_for_function("document.querySelector('#sel-part .opinions').innerText.includes('REFERENCE')")
+        pg.click("#sel-part [data-a=covered]"); pg.wait_for_selector("#side-parts div[data-ref='C8'] .chip.st-cant")
+        assert "covered: heatsink" in pg.inner_text("#side-parts div[data-ref='C8']")
+        pg.wait_for_selector("#sel-part [data-cover=label]")
+        assert "COVERED: HEATSINK" in pg.inner_text("#sel-part [data-a=covered]")
+        assert "other" in pg.inner_text("#sel-part .carry") and "still check" in pg.inner_text("#sel-part .carry"), pg.inner_text("#sel-part .carry")
+        assert int(pg.inner_text("#side-legend [data-stat=cant] b")) == n_cant + 1
+        assert pg.eval_on_selector("#parts-svg polygon[data-ref='C8']", "p => p.classList.contains('st-cant')")
+        pg.click("#sel-part [data-cover=label]"); pg.wait_for_function("document.querySelector('#sel-part .head').innerText.includes('covered: label')")
+        pg.screenshot(path=str(out / "14b-covered-on-reference.png"))
+        one_scroller(pg, "front, covered part")
+        pg.click("#sel-part [data-a=covered]"); pg.wait_for_selector("#side-parts div[data-ref='C8'] .chip.st-in")    # pressed again: undone
+        pg.keyboard.press("c"); pg.wait_for_selector("#side-parts div[data-ref='C8'] .chip.st-cant")                   # key C
+        info = call(f"api/part/info?src=project/{other_uid}/front&ref=C8")
+        assert not info["covered"] and info["reference_covered"] == "heatsink" and info["verdict"] != "covered", info
+        # Check a board: the open check compares C8 again; it looks like the covered look: one click confirms
+        pg.click("button[data-tab=check]"); pg.wait_for_selector("#ck-flagged [data-cov][data-ref='C8']")
+        assert "LOOKS COVERED" in pg.inner_text("#ck-flagged"), pg.inner_text("#ck-flagged")
+        n_cant = int(pg.inner_text("#ck-legend .st-cant b"))
+        pg.click("#ck-flagged button.hint[data-ref='C8']"); pg.wait_for_selector("#ck-ok [data-uncov='C8']")
+        assert int(pg.inner_text("#ck-legend .st-cant b")) == n_cant + 1 and "covered: heatsink" in pg.inner_text("#ck-ok")
+        pg.screenshot(path=str(out / "14c-covered-on-check.png"))
+        one_scroller(pg, "check, covered part")
+        pg.click("#ck-ok [data-uncov='C8']"); pg.wait_for_selector("#ck-flagged [data-cov][data-ref='C8']")
+        pg.click("#ck-flagged button.a-covered:not(.hint)[data-ref='C8']"); pg.wait_for_selector("#ck-ok [data-uncov='C8']")
+        chk = call("api/check/state")["check"]
+        assert next(r for r in chk["sides"]["front"]["results"] if r["ref"] == "C8")["status"] == "covered"
+        # History: the check lists C8 covered
+        pg.click("#ck-run details.more summary"); pg.click("[data-goto=history][data-hist=checks]")
+        pg.wait_for_selector(f"#hist-list tr[data-uid='{chk['uid']}']"); pg.click(f"#hist-list tr[data-uid='{chk['uid']}']")
+        pg.wait_for_function("document.querySelector('#hist-detail').innerText.includes('COVERED ON THE FRONT')")
+        call(f"api/history/{other_uid}/open", {})
+        pg.reload(); pg.wait_for_selector("#tab-files:not([hidden])")
+
         # ---- making PTC 001 the reference: review each difference first ---------------------------
         pg.click("button[data-tab=map]"); pg.wait_for_selector("#map-ref")
         pg.click("#map-ref"); pg.wait_for_selector("#tab-review:not([hidden])")

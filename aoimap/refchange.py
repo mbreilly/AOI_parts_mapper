@@ -15,6 +15,10 @@ Parts that look the same switch over without a question. Each difference is a ro
                 new reference's look of it isn't trusted)
     ns          NS: not stuffed on every board of the design
 
+A part answered COVERED on the new reference (under a heatsink...) can't be the standard there: its row
+starts decided KEEP OLD, so the old reference's look of it is kept as a good example and later boards go
+by that. Covered on the old one only, KEEP OLD keeps nothing (that look was never the standard).
+
 The old reference stays the one in use until every row has a decision and the change is finished
 (decisions are saved as they are made, so it can be finished later). A finished change can be undone:
 the old reference is put back and what the decisions added is taken away again.
@@ -41,7 +45,8 @@ CHOICES = {"accept": "ACCEPT NEW", "keep_old": "KEEP OLD", "wrong": "MARK NEW AS
 # why a part needs a decision, in plain words
 KINDS = {"different": "looks different", "turned": "turned or reversed", "missing_new": "missing on the new one",
          "missing_old": "missing on the old one", "not_seen": "can't be seen on the new one",
-         "answer": "an answer given before doesn't fit the new picture", "ns": "not stuffed on one of them"}
+         "answer": "an answer given before doesn't fit the new picture", "ns": "not stuffed on one of them",
+         "covered_new": "covered on the new reference", "covered_old": "covered on the old reference"}
 LISTENERS = []          # called with a change id whenever one changes (the database copy follows)
 _BUILDING = {}          # change id -> progress while its rows are worked out
 
@@ -170,6 +175,8 @@ def _refs(data, c, side) -> list[str]:
     out |= set(d["reference_wrong"].get(c["old"], []))
     for key in (ck.ns_key(pj.load(data, c["old"]).get("serial", ""), c["old"]), ck.ALL_BOARDS):
         out |= set(d["not_stuffed"].get(key, []))
+    for uid in (c["old"], c["new"]):
+        out |= set(ck.reference_covered(data, c["board"], side, uid))
     return sorted(out, key=lambda r: (re.sub(r"\d+", "", r), int((re.findall(r"\d+", r) or ["0"])[0])))
 
 
@@ -205,7 +212,18 @@ def compare(data: Path, c: dict, side: str, ref: str) -> dict | None:
     ns_old, ns_new = ref in lx["not_stuffed"].get(old_key, []), ref in lx["not_stuffed"].get(new_key, [])
     if ref in lx["not_stuffed"].get(ck.ALL_BOARDS, []):
         return None          # not stuffed on any board: nothing to compare
+    cov_old = ck.reference_covered(data, board, side, c["old"]).get(ref)
+    cov_new = ck.reference_covered(data, board, side, c["new"]).get(ref)
+    if cov_old and cov_new:
+        return None          # covered on both: neither shows it, nothing to compare
     kinds, why = [], []
+    if cov_new:
+        kinds.append("covered_new")
+        why.append(f"covered on the new reference ({cov_new}): its look there can't be the standard. "
+                   "KEEP OLD keeps the old reference's look of it as a good example")
+    elif cov_old:
+        kinds.append("covered_old")
+        why.append(f"covered on the old reference ({cov_old}); the new one shows it, so its look can be the standard")
     if ns_old != ns_new:
         kinds.append("ns")
         why.append("answered NS on the " + ("old" if ns_old else "new") + " reference only")
@@ -271,6 +289,9 @@ def build(data: Path, cid: str):
         time.sleep(0.01)            # give the page's own requests a turn
     c = load(data, cid)
     c["rows"], c["same"] = rows, same
+    for r in rows:          # covered on the new reference: KEEP OLD unless the tester says otherwise
+        if "covered_new" in r["kinds"] and r["key"] not in c["decisions"]:
+            c["decisions"][r["key"]] = {"choice": "keep_old", "at": pj.now(), "default": True}
     save(data, c)
 
 
@@ -346,7 +367,9 @@ def finish(data: Path, cid: str, on_project=None) -> dict:
     for r in c["rows"]:
         side, ref, ch = r["side"], r["ref"], c["decisions"][r["key"]]["choice"]
         try:
-            if ch == "keep_old":
+            if ch == "keep_old" and "covered_old" in r["kinds"]:
+                pass            # the old look was of it covered: nothing to keep
+            elif ch == "keep_old":
                 ex = tl.add(data, f"project/{c['old']}/{side}", ref, "good", note=f"kept from the old reference ({note})")
                 applied["examples"].append([side, ex])
             elif ch == "wrong":
@@ -439,6 +462,9 @@ def keep_old_reference(data: Path, uid: str, side: str) -> dict:
         d = ck.load_examples(data, p["board"], s)
         for r in d["reference_wrong"].get(uid, []):
             ck.set_reference_wrong(data, p["board"], s, snap["uid"], r, True)
+        if not (p.get("serial") or "").strip():     # COVERED goes by serial; with none, by the project
+            for r, why in d["covered"].get(ck.ns_key("", uid), {}).items():
+                ck.set_covered(data, p["board"], s, ck.ns_key("", snap["uid"]), r, why)
     p["reference"] = False
     p["replaced_reference"] = snap["uid"]
     pj.save(data, p)

@@ -232,6 +232,7 @@ def collect(data: Path, board: str, note=lambda text: None) -> list[dict]:
     the quarter turns from upright when known; "from" says where the answer came from."""
     data = Path(data)
     found = {}                      # (src, ref) -> example; a tester's answer wins over the reference's
+    hidden = set()                  # (src, ref) answered COVERED: its look there says nothing about the part
 
     def add(src, ref, origin, present=None, right=None, quarter=None):
         k = (src, ref)
@@ -249,7 +250,7 @@ def collect(data: Path, board: str, note=lambda text: None) -> list[dict]:
         exs = ck.load_examples(data, board, side)
         for e in exs["examples"]:
             src = e.get("source") or (f"check/{e['check']}/{side}" if e.get("check") else "")
-            if not src:
+            if not src or e["label"] == "covered":
                 continue
             if e["label"] == "good":
                 add(src, e["ref"], "taught", True, True, 0)
@@ -268,6 +269,7 @@ def collect(data: Path, board: str, note=lambda text: None) -> list[dict]:
                 continue
             for ref in set(ns.get(ck.ns_key(info["serial"], info["uid"]), [])) | set(ns.get(ck.ALL_BOARDS, [])):
                 add(s["id"], ref, "ns", False)
+            hidden |= {(s["id"], ref) for ref in exs["covered"].get(ck.ns_key(info["serial"], info["uid"]), {})}
         # the reference boards, checked by hand
         for r in ck.references(data):
             if r["board"] != board or side not in r["sides"]:
@@ -291,8 +293,9 @@ def collect(data: Path, board: str, note=lambda text: None) -> list[dict]:
                     add(src, c["ref"], "reference", True)
     # cut each part out of its photo, one photo at a time
     out, by_src, skipped = [], {}, {}
-    for e in found.values():
-        by_src.setdefault(e["src"], []).append(e)
+    for k, e in found.items():
+        if k not in hidden:
+            by_src.setdefault(e["src"], []).append(e)
     for i, (src, rows) in enumerate(sorted(by_src.items())):
         note(f"Cutting parts out of photo {i + 1} of {len(by_src)}")
         try:

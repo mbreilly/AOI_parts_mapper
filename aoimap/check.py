@@ -47,13 +47,18 @@ MAX_EXAMPLES = 20           # learned examples of each kind (good, bad) kept for
 REASONS = {"reversed": "Reversed", "missing": "Missing", "wrong_part": "Wrong part", "damaged": "Damaged",
            "shifted": "Misplaced / shifted", "other": "Other"}
 
+# what covers a part on one board so the photo can't show it (COVERED: not a fault, the part is still
+# checked on every other board); the tester can also type their own
+COVER_REASONS = {"heatsink": "heatsink", "label": "label", "shield": "shield", "cable": "cable", "other": "other"}
+
 # called with (board, side) whenever a side's learned examples change (the database copy follows)
 LEARNED_LISTENERS = []
 
 STATUS_COLOURS = {"ok": (80, 190, 80), "reversed": (60, 60, 230), "rotated": (60, 60, 230), "check": (40, 170, 240),
                   "fault": (60, 60, 230),   # fault: looks like a learned bad example (a known fault)
-                  "ns": (150, 150, 150)}    # ns: not stuffed, left off this board on purpose (not a fault)
-FINE = ("ok", "ns")         # statuses that need no answer
+                  "ns": (150, 150, 150),    # ns: not stuffed, left off this board on purpose (not a fault)
+                  "covered": (255, 155, 196)}   # covered: can't be seen on this board (a heatsink...), not a fault
+FINE = ("ok", "ns", "covered")      # statuses that need no answer
 ALL_BOARDS = "*"            # the not-stuffed key for every board of a design
 
 
@@ -133,11 +138,13 @@ def learned_dir(data: Path, board: str, side: str) -> Path:
 
 
 def load_examples(data: Path, board: str, side: str) -> dict:
-    """{"examples": [{id, ref, label: good|bad, note, serial, check, date, file}],
-    "reference_wrong": {reference uid: [ref, ...]}, "not_stuffed": {serial or ALL_BOARDS: [ref, ...]}}"""
+    """{"examples": [{id, ref, label: good|bad|covered, note, serial, check, date, file}],
+    "reference_wrong": {reference uid: [ref, ...]}, "not_stuffed": {serial or ALL_BOARDS: [ref, ...]},
+    "covered": {serial: {ref: what covers it}}}. A "covered" example is a part's look while covered: never
+    a good or bad example of it, only a hint that a later board may have it covered too."""
     d = pj._read_json(learned_dir(data, board, side) / "examples.json", {}) or {}
     return {"examples": d.get("examples", []), "reference_wrong": d.get("reference_wrong", {}),
-            "not_stuffed": d.get("not_stuffed", {})}
+            "not_stuffed": d.get("not_stuffed", {}), "covered": d.get("covered", {})}
 
 
 def _save_examples(data: Path, board: str, side: str, d: dict):
@@ -240,10 +247,50 @@ def ns_why(scope: str) -> str:
     return "not stuffed on any board of this design" if scope == "all" else "not stuffed on this board"
 
 
-def taught_refs(data: Path, board: str, side: str) -> set:
-    """Parts answered on this side of some board: with a learned example, or NS on one board."""
+def cover_reason(reason) -> str:
+    """What covers a part, as kept: one of COVER_REASONS or the tester's own words (heatsink if none)."""
+    r = " ".join(str(reason or "").split())[:40]
+    return r.lower() if r.lower() in COVER_REASONS else r or "heatsink"
+
+
+def set_covered(data: Path, board: str, side: str, key: str, ref: str, reason: str = "heatsink", on: bool = True):
+    """COVERED: on this one board (key from ns_key) the part can't be seen (under a heatsink, a label...).
+    Not a fault, and not asked about there; every other board still checks it. on=False undoes it."""
     d = load_examples(data, board, side)
-    return {e["ref"] for e in d["examples"]} | {r for k, refs in d["not_stuffed"].items() if k != ALL_BOARDS for r in refs}
+    refs = dict(d["covered"].get(key, {}))
+    if on:
+        refs[ref] = cover_reason(reason)
+    else:
+        refs.pop(ref, None)
+    if refs:
+        d["covered"][key] = dict(sorted(refs.items()))
+    else:
+        d["covered"].pop(key, None)
+    _save_examples(data, board, side, d)
+
+
+def covered(data: Path, board: str, side: str, key: str) -> dict:
+    """{ref: what covers it} on this board."""
+    return dict(load_examples(data, board, side)["covered"].get(key, {}))
+
+
+def reference_covered(data: Path, board: str, side: str, ref_uid: str | None) -> dict:
+    """{ref: what covers it} on a reference board: its photo is no standard for those parts."""
+    if not ref_uid:
+        return {}
+    p = pj._read_json(pj.folder(data, ref_uid) / "project.json", {}) or {}
+    return covered(data, board, side, ns_key(p.get("serial", ""), ref_uid))
+
+
+def cover_why(reason: str) -> str:
+    return f"covered: {reason or 'heatsink'} (can't be seen on this board; checked on the others)"
+
+
+def taught_refs(data: Path, board: str, side: str) -> set:
+    """Parts answered on this side of some board: with a learned example, NS or COVERED on one board."""
+    d = load_examples(data, board, side)
+    return {e["ref"] for e in d["examples"]} | {r for k, refs in d["not_stuffed"].items() if k != ALL_BOARDS for r in refs} \
+        | {r for refs in d["covered"].values() for r in refs}
 
 
 def board_profile(data: Path, board: str) -> dict:
@@ -269,12 +316,12 @@ def box_round(box):
 
 
 def example_images(data: Path, board: str, side: str) -> dict:
-    """{ref: {"good": [(image, example)], "bad": [(image, example)]}} for check_part."""
+    """{ref: {"good": [(image, example)], "bad": [...], "covered": [...]}} for check_part."""
     out = {}
     for e in load_examples(data, board, side)["examples"]:
         im = cv2.imread(str(learned_dir(data, board, side) / e["file"]))
-        if im is not None:
-            out.setdefault(e["ref"], {"good": [], "bad": []})[e["label"]].append((im.astype(np.float32), e))
+        if im is not None and e["label"] in ("good", "bad", "covered"):
+            out.setdefault(e["ref"], {"good": [], "bad": [], "covered": []})[e["label"]].append((im.astype(np.float32), e))
     return out
 
 
@@ -354,7 +401,8 @@ def _ncc(a, b) -> float:
     return float((a * b).sum() / d) if d > 1e-6 else 0.0
 
 
-def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = None, reference_wrong: bool = False) -> dict:
+def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = None, reference_wrong: bool = False,
+               reference_covered: str = "") -> dict:
     """Compares a part on the lined-up photo with the reference.
 
     The part is first found near where the reference has it, as placed or turned round, whichever
@@ -366,7 +414,10 @@ def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = Non
     Then the learned examples of the part, {"good": [(image, example)], "bad": [...]}, are compared
     too: a part that looks like a known fault is flagged "fault"; a flagged part that looks like one
     the tester confirmed right way round passes. reference_wrong: a tester said the reference shows
-    this part wrong, so the reference turned round is its right look."""
+    this part wrong, so the reference turned round is its right look. reference_covered: what covers
+    the part on the reference (a heatsink...), so the reference is no standard for it at all: only
+    good examples from other boards pass it. A part that looks like one answered COVERED on another
+    board is asked about with suggest="covered"."""
     x, y, w, h = (int(round(v)) for v in part["box"])
     # with some of the board round the part, so the template can't slide off it and still match
     e = max(3, int(0.3 * min(w, h)))
@@ -431,9 +482,14 @@ def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = Non
     learned = learned or {}
     good = [(_learned_match(area, im, (w, h), look), e) for im, e in learned.get("good", [])]
     bad = [(_learned_match(area, im, (w, h), look), e) for im, e in learned.get("bad", [])]
+    if reference_covered:      # nothing on the reference to go by: good examples from other boards decide
+        out.update(status="check", mark=0.0, why=f"no standard yet: the reference has it covered ({reference_covered}); "
+                   "answer it on a board where it's visible" if not good else
+                   f"doesn't look like the good examples of it (the reference has it covered: {reference_covered})")
     # the closest right look: confirmed-good examples and the reference (turned round if it shows the part
-    # wrong; not at all for a part with no polarity mark that the reference shows wrong)
-    best_good = max([v for v, _ in good] + [-1.0 if look and reference_wrong else max(same, rev) if look else rev if reference_wrong else same])
+    # wrong; not at all for a part with no polarity mark that the reference shows wrong, or one it has covered)
+    best_good = max([v for v, _ in good] + [-1.0 if reference_covered or (look and reference_wrong)
+                                            else max(same, rev) if look else rev if reference_wrong else same])
     best_bad, bad_ex = max(bad, key=lambda v: v[0]) if bad else (-1.0, None)
     if best_bad >= MIN_MATCH and best_bad > best_good + LEARNED_MARGIN:
         seen = " ".join(v for v in (bad_ex.get("serial"), bad_ex.get("date", "")[:10]) if v)
@@ -444,6 +500,14 @@ def check_part(aligned, ref, part: dict, margin: int, learned: dict | None = Non
         if g >= MIN_MATCH and g > best_bad + LEARNED_MARGIN:
             seen = " ".join(v for v in (ex.get("serial"), ex.get("date", "")[:10]) if v)
             out.update(status="ok", learned="good", why=f"looks like a part confirmed right way round ({seen})")
+    # looks like it did when a tester answered COVERED on another board: probably covered here too
+    cov = [(_learned_match(area, im, (w, h), True), e) for im, e in learned.get("covered", [])]
+    if out["status"] != "ok" and cov:
+        c, ex = max(cov, key=lambda v: v[0])
+        if c >= MIN_MATCH and c > max(best_good, best_bad) + LEARNED_MARGIN:
+            what = ex.get("note") or "heatsink"
+            out.update(status="check", suggest="covered", cover=what,
+                       why=f"looks covered ({what}?) as on {ex.get('serial') or 'another board'}: answer COVERED if it is")
     return out
 
 
@@ -456,10 +520,10 @@ def overlay(img, results, width: int = 1600) -> bytes:
     for r in results:
         x, y, w, h = (int(v * s) for v in r["box"])
         st = {"correct": "ok", "wrong": "reversed"}.get(r.get("answer"), r["status"])
-        if st == "ns":      # not stuffed: a grey dashed box, labelled NS
+        if st in ("ns", "covered"):      # not stuffed (grey) or covered (lavender): a dashed box, labelled
             ph.dashed_poly(vis, [(x - 3, y - 3), (x + w + 3, y - 3), (x + w + 3, y + h + 3), (x - 3, y + h + 3)], STATUS_COLOURS[st], t)
-            cv2.putText(vis, f"{r['ref']} NS", (x, max(14, y - 7)), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * vis.shape[1] / 1600 + 0.2,
-                        STATUS_COLOURS[st], 2)
+            cv2.putText(vis, f"{r['ref']} {'NS' if st == 'ns' else 'COVERED'}", (x, max(14, y - 7)), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6 * vis.shape[1] / 1600 + 0.2, STATUS_COLOURS[st], 2)
             continue
         cv2.rectangle(vis, (x - 3, y - 3), (x + w + 3, y + h + 3), STATUS_COLOURS[st], t)
         if r["status"] != "ok" or r.get("answer"):
@@ -500,6 +564,7 @@ def row(c: dict) -> dict:
         rs = s.get("results", [])
         out[side] = {"aligned": bool(s.get("aligned")), "checked": len(rs),
                      "flagged": sum(1 for r in rs if r["status"] not in FINE),
+                     "covered": [r["ref"] for r in rs if r["status"] == "covered"],
                      "wrong": [r["ref"] for r in rs if r.get("answer") == "wrong"]}
     return out
 
@@ -663,15 +728,16 @@ class Checks:
         pending = pending_refs(self.data, board, side)
         parts, skipped = self._ref_parts(side, taught_refs(self.data, board, side) | pending)
         results = self._compare(side, aligned, parts)
-        ns = self._ns(side)
-        usual = [r for r in results if r["ref"] not in pending and r["ref"] not in ns]
+        ns, cov = self._ns(side), self._covered(side)
+        usual = [r for r in results if r["ref"] not in pending and r["ref"] not in ns and r["ref"] not in cov]
         if usual and np.median([max(r["score"], r["turned"]) for r in usual]) < 0.45 and not (force and len(usual) < 3):
             return False
         self._mark(side, results, pending)
         d = folder(self.data, self.cur["uid"]) / side
         cv2.imwrite(str(d / "aligned.jpg"), aligned, [cv2.IMWRITE_JPEG_QUALITY, 92])
         self._img[(self.cur["uid"], side, "aligned")] = aligned
-        st.update(aligned=True, need_points=False, message=msg, H=np.asarray(H).tolist(), results=results, skipped=skipped)
+        st.update(aligned=True, need_points=False, message=msg, H=np.asarray(H).tolist(), results=results, skipped=skipped,
+                  ref_covered=sorted(reference_covered(self.data, board, side, self.cur["reference"])))
         (d / "result.jpg").write_bytes(overlay(aligned, results))
         flagged = [r["ref"] for r in results if r["status"] not in FINE]
         self._touch(f"{side.capitalize()} checked: {len(results)} parts, "
@@ -684,15 +750,20 @@ class Checks:
         margin = max(8, int(0.004 * ref.shape[1]))
         learned = example_images(self.data, board, side)
         wrong = set(load_examples(self.data, board, side)["reference_wrong"].get(self.cur["reference"], []))
-        results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong) for p in parts]
+        rcov = reference_covered(self.data, board, side, self.cur["reference"])
+        results = [check_part(aligned, ref, p, margin, learned.get(p["ref"]), p["ref"] in wrong, rcov.get(p["ref"], ""))
+                   for p in parts]
         self._models(side, aligned, results)
         return results
 
     def _mark(self, side, results, pending):
-        ns = self._ns(side)
+        ns, cov = self._ns(side), self._covered(side)
         for r in results:
             if r["ref"] in ns:           # not stuffed on purpose: not a fault, nothing to ask
                 r.update(seen={"status": r["status"], "why": r["why"]}, status="ns", why=ns_why(ns[r["ref"]]))
+            elif r["ref"] in cov:        # covered on this board (a heatsink...): not a fault, nothing to ask
+                r.update(seen={"status": r["status"], "why": r["why"]}, status="covered", cover=cov[r["ref"]],
+                         why=cover_why(cov[r["ref"]]))
             elif r["ref"] in pending:    # added by hand to wait for a photo: always asked until taught
                 r.update(status="check", new=True, why="new part, teach me: is it right?")
 
@@ -729,6 +800,22 @@ class Checks:
                 new = [p for p in parts if p["ref"] not in have]
                 had_sk = {k["ref"] for k in st.get("skipped", [])}
                 new_sk = [k for k in skipped if k["ref"] not in had_sk and k["ref"] not in have]
+                # a part answered COVERED on the reference since (or no longer): compared again, unless answered here
+                rcov = set(reference_covered(self.data, board, side, c["reference"]))
+                flip = rcov ^ set(st.get("ref_covered", []))
+                redo = [p for p in parts if p["ref"] in flip and p["ref"] in have and not any(
+                    r["ref"] == p["ref"] and (r.get("answer") or r["status"] in ("ns", "covered")) for r in st["results"])]
+                if flip:
+                    st["ref_covered"] = sorted(rcov)
+                if redo:
+                    res = self._compare(side, self._aligned(c["uid"], side), redo)
+                    self._mark(side, res, pending)
+                    by = {r["ref"]: r for r in res}
+                    st["results"] = [by.get(r["ref"], r) for r in st["results"]]
+                    (folder(self.data, c["uid"]) / side / "result.jpg").write_bytes(overlay(self._aligned(c["uid"], side), st["results"]))
+                    self._touch(f"{side.capitalize()} {', '.join(sorted(by))}: compared again, as the reference's COVERED answer changed")
+                elif flip:
+                    save(self.data, c)
                 if not new and not new_sk:
                     continue
                 if new:
@@ -798,6 +885,43 @@ class Checks:
         self._touch(f"{side.capitalize()} {ref}: " + (("NOT STUFFED on every board of this design" if everywhere
                                                       else "NOT STUFFED on this board") if on else "NS undone, checked again"))
 
+    def _covered(self, side) -> dict:
+        return covered(self.data, self.cur["board"], side, ns_key(self.cur.get("serial", ""), self.cur["uid"]))
+
+    def set_covered(self, side, ref, on: bool = True, reason: str = "heatsink"):
+        """COVERED: on this board the part can't be seen (a heatsink, a label...). Not a fault and not
+        asked about here; every other board of the design still checks it. Its look here is kept as a
+        "covered" example (never as good or bad), so a later board that looks the same is asked "covered?".
+        An answer already given for it is cleared, with its example; on=False undoes it."""
+        st = self._need(side)
+        c, board = self.cur, self.cur["board"]
+        r = next((r for r in st.get("results", []) if r["ref"] == ref), None)
+        if not r:
+            raise ValueError(f"{ref} isn't checked on this side.")
+        if on and r["status"] == "ns":
+            raise ValueError(f"{ref} is marked not stuffed: undo NS first.")
+        reason = cover_reason(reason)
+        if on and r.get("answer"):
+            self.answer(side, ref, None)
+        for e in [e for e in load_examples(self.data, board, side)["examples"]
+                  if e["ref"] == ref and e["label"] == "covered" and e.get("source") == f"check/{c['uid']}/{side}"]:
+            delete_example(self.data, board, side, e["id"])
+        r.pop("cover_example", None)
+        set_covered(self.data, board, side, ns_key(c.get("serial", ""), c["uid"]), ref, reason, on)
+        img = self._aligned(c["uid"], side)
+        if on:
+            r["cover_example"] = add_example(self.data, board, side, img, r.get("at") or box_round(r["box"]), ref, "covered",
+                                             reason, c.get("serial", ""), c["uid"], "", f"check/{c['uid']}/{side}")
+            r.setdefault("seen", {"status": r["status"], "why": r["why"]})
+            r.update(status="covered", cover=reason, why=cover_why(reason))
+            r.pop("suggest", None)
+        elif "seen" in r:
+            r.pop("cover", None)
+            r.update(r.pop("seen"))
+        (folder(self.data, c["uid"]) / side / "result.jpg").write_bytes(overlay(img, st["results"]))
+        self._touch(f"{side.capitalize()} {ref}: " + (f"COVERED on this board ({reason}): not a fault, still checked on the others"
+                                                      if on else "COVERED undone, checked again"))
+
     def answer(self, side, ref, answer, note=None, missed=False, reason=None):
         """The tester's answer for a part, which also teaches the check (see learned examples). A
         part the check passed can be answered wrong: it missed it. A changed or cleared answer
@@ -812,6 +936,8 @@ class Checks:
         c, board = self.cur, self.cur["board"]
         if answer and r["status"] == "ns":
             raise ValueError(f"{ref} is marked not stuffed: undo NS first.")
+        if answer and r["status"] == "covered":      # it can be seen after all: answered as usual
+            self.set_covered(side, ref, False)
         if r["status"] != "ok" or answer == "correct":
             missed = False
         elif answer is None:
@@ -851,7 +977,7 @@ class Checks:
         d = load_examples(self.data, board, side)
         return {"board": board, "side": side, "folder": str(learned_dir(self.data, board, side).resolve()),
                 "examples": sorted(d["examples"], key=lambda e: e["date"], reverse=True),
-                "reference_wrong": d["reference_wrong"]}
+                "reference_wrong": d["reference_wrong"], "covered": d["covered"]}
 
     def learned_boards(self) -> list[dict]:
         """Board designs with a reference or anything learned, with how many examples each side has."""
@@ -866,6 +992,7 @@ class Checks:
                 d = load_examples(self.data, n, s)
                 row[s] = {"good": sum(e["label"] == "good" for e in d["examples"]),
                           "bad": sum(e["label"] == "bad" for e in d["examples"]),
+                          "covered": sum(e["label"] == "covered" for e in d["examples"]),
                           "reference_wrong": sum(len(v) for v in d["reference_wrong"].values())}
             out.append(row)
         return out
@@ -886,6 +1013,8 @@ class Checks:
             for r in self.cur["sides"].get(side, {}).get("results", []):
                 if r.get("example") == ex_id:
                     r.pop("example")
+                if r.get("cover_example") == ex_id:
+                    r.pop("cover_example")
             save(self.data, self.cur)
 
     def trust_reference(self, board: str, side: str, reference: str, ref: str):

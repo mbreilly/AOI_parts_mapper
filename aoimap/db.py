@@ -33,8 +33,9 @@ except ImportError:   # the app still runs, without the database
     pymysql = None
 
 DEFAULT_CONFIG = Path.home() / ".config" / "aoimap" / "db.cnf"
-SCHEMA_VERSION = 6      # 2: learned examples, board choices and parts added by hand; 3: projects above the tabs;
-                        # 4: parts not stuffed (NS); 5: the trained models' metrics; 6: reference changes
+SCHEMA_VERSION = 7      # 2: learned examples, board choices and parts added by hand; 3: projects above the tabs;
+                        # 4: parts not stuffed (NS); 5: the trained models' metrics; 6: reference changes;
+                        # 7: parts covered on one board (COVERED: a heatsink...)
 
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS aoi_schema (version INT NOT NULL) ENGINE=InnoDB""",
@@ -170,6 +171,15 @@ SCHEMA = [
         side VARCHAR(8) NOT NULL,
         serial VARCHAR(128) NOT NULL,
         ref VARCHAR(64) NOT NULL,
+        PRIMARY KEY (board, side, serial, ref)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    # parts covered on one board (a heatsink, a label...), by its serial: can't be seen there, checked on the others
+    """CREATE TABLE IF NOT EXISTS aoi_learned_covered (
+        board VARCHAR(128) NOT NULL,
+        side VARCHAR(8) NOT NULL,
+        serial VARCHAR(128) NOT NULL,
+        ref VARCHAR(64) NOT NULL,
+        reason VARCHAR(64) NOT NULL DEFAULT 'heatsink',
         PRIMARY KEY (board, side, serial, ref)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
     # the projects chosen above the tabs (groups.py), and the board designs each is made from
@@ -494,7 +504,7 @@ class History:
 
     def write_learned(self, board: str, side: str):
         """One side's learned examples: new ones with their image, changed notes, deleted ones removed;
-        and its parts not stuffed."""
+        and its parts not stuffed or covered."""
         d = ck.load_examples(self.data, board, side)
         folder = ck.learned_dir(self.data, board, side)
 
@@ -529,6 +539,10 @@ class History:
             rows = [(board, side, key[:128], r[:64]) for key, refs in d["not_stuffed"].items() for r in refs]
             if rows:
                 c.executemany("INSERT INTO aoi_learned_not_stuffed (board, side, serial, ref) VALUES (%s, %s, %s, %s)", rows)
+            c.execute("DELETE FROM aoi_learned_covered WHERE board=%s AND side=%s", (board, side))
+            rows = [(board, side, key[:128], r[:64], (why or "")[:64]) for key, refs in d["covered"].items() for r, why in refs.items()]
+            if rows:
+                c.executemany("INSERT INTO aoi_learned_covered (board, side, serial, ref, reason) VALUES (%s, %s, %s, %s, %s)", rows)
             return True
         return self._run(go)
 

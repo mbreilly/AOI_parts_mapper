@@ -28,7 +28,7 @@ from . import design as designlib
 from . import odb as odblib
 from . import photo as ph
 from . import projects as pj
-from .check import REASONS
+from .check import COVER_REASONS, REASONS
 
 DEFAULT_PROFILE = {
     "columns": None, "kinds": {}, "hidden": {}, "rot_sign": None, "markings": dict(designlib.DEFAULT_MARKINGS),
@@ -404,8 +404,10 @@ class Board:
         """Keeps a part on any lined-up photo of a board as a good or bad example (see teach.py). A
         part that isn't in the check yet is added to it, as kind (by default "check its look")."""
         from . import teach as tl
-        from .check import set_reference_wrong
+        from .check import covered, ns_key, set_reference_wrong
         s = tl.source(self.data, src)
+        if ref in covered(self.data, s["board"], s["side"], ns_key(s["serial"], s["uid"])):
+            tl.set_covered(self.data, src, ref, False)      # it can be seen after all: answered as usual
         ex_id = tl.add(self.data, src, ref, label, reason, note)
         self._into_check(s, ref, kind)
         what = f"Taught {s['side']} {ref} as {'GOOD' if label == 'good' else 'BAD'}" + \
@@ -442,6 +444,28 @@ class Board:
                 (p.get("new_in_check") or {}).pop(ref, None)
             self._touch(f"{s['side'].capitalize()} {ref}: " + (("NOT STUFFED on every board of this design" if everywhere
                         else "NOT STUFFED on this board") if on else "NS undone") + f" from {s['label']}", p)
+
+    def set_covered(self, src: str, ref: str, on: bool = True, reason: str = "heatsink"):
+        """COVERED on a photo's board: the part can't be seen there (a heatsink...). Not a fault; it stays
+        in the check and every other board of the design checks it (see teach.py, check.py). On the
+        reference, its look there stops being the standard: later boards go by good examples instead."""
+        from . import teach as tl
+        from .check import cover_reason, load_examples, set_reference_wrong
+        if on:
+            from .check import not_stuffed, ns_key
+            s = tl.source(self.data, src)
+            if ref in not_stuffed(self.data, s["board"], s["side"], ns_key(s["serial"], s["uid"])):
+                raise ValueError(f"{ref} is marked not stuffed: undo NS first.")
+        s = tl.set_covered(self.data, src, ref, on, reason)
+        self._into_check(s, ref)
+        if s["kind"] == "project":
+            p = self.project if self.project and self.project["uid"] == s["uid"] else pj.load(self.data, s["uid"])
+            if on and ref in load_examples(self.data, s["board"], s["side"])["reference_wrong"].get(s["uid"], []):
+                set_reference_wrong(self.data, s["board"], s["side"], s["uid"], ref, False)   # its BAD answer went with it
+            if on:
+                (p.get("new_in_check") or {}).pop(ref, None)
+            self._touch(f"{s['side'].capitalize()} {ref}: " + (f"COVERED on this board ({cover_reason(reason)}): not a fault, "
+                        "still checked on every other board" if on else "COVERED undone") + f" from {s['label']}", p)
 
     def extras(self) -> list[dict]:
         """The parts added by hand, with how much each has been taught, for the Parts tab."""
@@ -751,7 +775,8 @@ class Board:
                 planned[side] = {ref for t in st.get("tiles", []) for ref in t["refs"]}
             n = learned.setdefault(side, {})
             for x in load_examples(self.data, self.name, side)["examples"]:
-                n.setdefault(x["ref"], {"good": 0, "bad": 0})[x["label"]] += 1
+                if x["label"] in ("good", "bad"):
+                    n.setdefault(x["ref"], {"good": 0, "bad": 0})[x["label"]] += 1
             taught[side] = taught_refs(self.data, self.name, side) | pending_refs(self.data, self.name, side)
         out = {}
         for ln in self.bom["lines"] + self.bom.get("dnp_lines", []):
@@ -851,7 +876,7 @@ class Board:
             "steps": [{k: s[k] for k in ("name", "sides", "has_components", "panel")} for s in self.steps],
             "bom_header": self.bom["header"] if self.bom else [],
             "bom_columns": self.bom["columns"] if self.bom else {},
-            "lines": lines, "kinds": bomlib.KINDS, "reasons": REASONS,
+            "lines": lines, "kinds": bomlib.KINDS, "reasons": REASONS, "cover_reasons": COVER_REASONS,
             "profile": {k: self.profile[k] for k in ("kinds", "hidden", "rot_sign", "markings", "orient", "min_px", "camera", "step", "use_tantalums", "extra")},
             "extras": self.extras(),
             "design": None if not d else {

@@ -372,7 +372,7 @@ def test_check_learns_from_answers():
     for e in c.learned(board, "front")["examples"]:
         c.forget(board, "front", e["id"])
     assert not load_examples(b.data, board, "front")["examples"]
-    assert c.learned_boards()[0]["front"] == {"good": 0, "bad": 0, "reference_wrong": 0}
+    assert c.learned_boards()[0]["front"] == {"good": 0, "bad": 0, "covered": 0, "reference_wrong": 0}
     res = run("SN-5", "C3")
     assert res["D8"]["status"] == "check" and res["C3"]["status"] == "reversed" and res["C5"]["status"] == "ok"
     assert [x["board"] for x in c.learned_boards()] == [r["board"] for r in references(b.data)]
@@ -1016,6 +1016,151 @@ def test_missing_and_not_stuffed_answers():
     b.set_ns(psrc, "D8", False)
     assert load_examples(b.data, board, "front")["not_stuffed"] == {"SN-1": ["C3"]}
     assert run("SN-4")["D8"]["status"] == "check"
+
+
+
+def test_covered_on_one_board_is_still_checked_on_the_others():
+    """COVERED (a heatsink...) on one board: not a fault there, not asked about, and never a good or bad
+    example; every other board still checks the part."""
+    from aoimap import teach as tl, viewer as vw
+    from aoimap.check import Checks, load, load_examples
+    b = reference_board()
+    c = Checks(b.data)
+    board, H2 = b.project["board"], fx.camera("front", tilt_deg=-3, ppi=280)
+    shot = lambda *rev: cv2.imencode(".png", fx.render("front", H2, reversed_refs=rev))[1].tobytes()
+
+    def run(serial, *rev):
+        c.start(b.project["uid"], serial)
+        c.photo("front", shot(*rev))
+        return {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+
+    res = run("BRD-H1", "C3")
+    assert res["C3"]["status"] == "reversed"
+    c.answer("front", "C3", "wrong")
+    c.set_covered("front", "C3")                      # under a heatsink on this board: its BAD answer goes
+    c.set_covered("front", "D8", reason="Label")
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["C3"]["status"] == "covered" and res["C3"]["cover"] == "heatsink" and not res["C3"].get("answer")
+    assert res["D8"]["cover"] == "label" and "covered: label" in res["D8"]["why"]
+    lx = load_examples(b.data, board, "front")
+    assert lx["covered"] == {"BRD-H1": {"C3": "heatsink", "D8": "label"}}
+    assert [e["label"] for e in lx["examples"]] == ["covered", "covered"]     # kept only as covered looks
+    for r in c.cur["sides"]["front"]["results"]:
+        if r["status"] not in ("ok", "ns", "covered"):
+            c.answer("front", r["ref"], "correct")
+    assert load(b.data, c.cur["uid"])["result"] == "PASS"
+    src = f"check/{c.cur['uid']}/front"
+    assert tl.inspect(b.data, src, "C3")["verdict"] == "covered" and tl.answers(b.data, board, src)["C3"] == "covered"
+    assert "C3" in ck_row_covered(c.cur)
+    # undo by pressing it again: asked about as before
+    c.set_covered("front", "D8", False)
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["D8"]["status"] == "check" and c.cur["result"] == "OPEN"
+    assert [e["ref"] for e in load_examples(b.data, board, "front")["examples"] if e["label"] == "covered"] == ["C3"]
+    # answering it GOOD or BAD says it can be seen after all
+    c.answer("front", "C3", "wrong", reason="reversed")
+    assert c.cur["sides"]["front"]["results"][0] and load_examples(b.data, board, "front")["covered"] == {}
+    c.set_covered("front", "C3")
+    # the next board checks C3 as usual, and its good one isn't taken for the covered look
+    res = run("BRD-H2")
+    assert res["C3"]["status"] == "ok" and "suggest" not in res["C3"], res["C3"]
+    # COVERED on a mapped board's photo (Front/Back): shown as covered there, the part stays in the check
+    psrc = f"project/{b.project['uid']}/front"
+    b.set_covered(psrc, "R2", reason="shield")
+    assert "R2" in {p["ref"] for p in b.design["parts"]}
+    st = vw.status(b)["parts"]["R2"]
+    assert st["st"] == "covered" and st["cover"] == "shield"
+    assert tl.inspect(b.data, psrc, "R2")["covered"] == "shield"
+    b.set_covered(psrc, "R2", False)
+    assert vw.status(b)["parts"]["R2"]["st"] != "covered"
+
+
+def ck_row_covered(c):
+    from aoimap.check import row
+    return row(c)["front"]["covered"]
+
+
+def test_covered_on_the_reference_isnt_the_standard():
+    """BRD006 has heatsinks on parts PTC002 shows: answered COVERED on the reference, later boards still
+    check those parts, against good answers from boards where they can be seen (or ask for one)."""
+    from aoimap import check as ck, teach as tl
+    b = reference_board()
+    ref_uid, board = b.project["uid"], b.project["board"]
+    src = f"project/{ref_uid}/front"
+    b.teach(src, "C3", "bad", "missing")              # answered before: COVERED takes its place
+    b.set_covered(src, "C3")
+    lx = ck.load_examples(b.data, board, "front")
+    assert not lx["reference_wrong"] and [e["label"] for e in lx["examples"] if e["ref"] == "C3"] == ["covered"]
+    assert tl.inspect(b.data, src, "C3")["verdict"] == "covered"
+    shot = lambda: cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes()
+    c = ck.Checks(b.data)
+    c.start(ref_uid, "PTC-H1")
+    c.photo("front", shot())
+    r = next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "C3")
+    # asked about, not passed for matching the reference (the drawn board has no heatsink, so it looks like
+    # the reference's covered look: "covered?"; with no such look it says there's no standard yet)
+    assert r["status"] == "check" and not r.get("learned") and r.get("suggest") == "covered", r
+    # answered GOOD on a board where it can be seen: later boards pass it by that
+    c.answer("front", "C3", "correct")
+    c.start(ref_uid, "PTC-H2")
+    c.photo("front", shot())
+    r = next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "C3")
+    assert r["status"] == "ok" and r.get("learned") == "good", r
+    # the other mapped boards of the design still check it (Front/Back of PTC002)
+    uid2 = second_board(b, ref_uid)
+    info = tl.inspect(b.data, f"project/{uid2}/front", "C3")
+    assert info["verdict"] == "correct" and info["reference_covered"] == "heatsink" and not info["covered"], info
+    # undone on the reference: its look is the standard again, and an open check compares C3 again
+    c.start(ref_uid, "PTC-H3")
+    c.photo("front", shot())
+    b.open_project(ref_uid)
+    b.set_covered(src, "C3", False)
+    c.refresh()
+    r = next(r for r in c.cur["sides"]["front"]["results"] if r["ref"] == "C3")
+    assert r["status"] == "ok" and not r.get("learned"), r
+
+
+def test_a_part_that_looks_covered_is_asked_covered():
+    from aoimap import check as ck
+    ref = np.full((80, 120, 3), 90, np.uint8); ref[30:50, 40:80] = 200; ref[30:50, 40:48] = 20
+    part = {"ref": "U3", "kind": "ic", "value": "", "box": [40, 30, 40, 20]}
+    sink = ref.copy(); sink[22:58, 32:88] = 140; sink[22:58, 32:88:6] = 230     # fins over the part
+    ex = sink[24:56, 34:86].astype(np.float32)
+    r = ck.check_part(sink, ref, part, 10)
+    assert r["status"] != "ok" and "suggest" not in r
+    r = ck.check_part(sink, ref, part, 10, {"covered": [(ex, {"note": "heatsink", "serial": "BRD006"})]})
+    assert r["status"] == "check" and r["suggest"] == "covered" and "heatsink" in r["why"], r
+    # a board where the part can be seen is passed as usual
+    assert ck.check_part(ref, ref, part, 10, {"covered": [(ex, {"note": "heatsink"})]})["status"] == "ok"
+    # the reference has it covered: no standard until a good example from another board
+    r = ck.check_part(ref, sink, part, 10, reference_covered="heatsink")
+    assert r["status"] == "check" and "no standard yet" in r["why"]
+    good = ref[24:56, 34:86].astype(np.float32)
+    assert ck.check_part(ref, sink, part, 10, {"good": [(good, {"serial": "PTC002"})]}, reference_covered="heatsink")["status"] == "ok"
+
+
+def test_covered_on_the_new_reference_keeps_the_old_by_default():
+    from aoimap import check as ck, refchange as rc
+    b = reference_board()
+    old, board = b.project["uid"], b.project["board"]
+    new = second_board(b, old)
+    b.set_covered(f"project/{new}/front", "C3")
+    c = _built(b.data, rc.start(b.data, old, new)["id"])
+    row = next(r for r in c["rows"] if r["ref"] == "C3")
+    assert "covered_new" in row["kinds"] and c["decisions"][row["key"]]["choice"] == "keep_old"
+    for r in c["rows"]:
+        if r["key"] not in c["decisions"]:
+            rc.decide(b.data, c["id"], [r["key"]], "accept")
+    rc.finish(b.data, c["id"])
+    lx = ck.load_examples(b.data, board, "front")
+    kept = [e for e in lx["examples"] if e["ref"] == "C3" and e["label"] == "good"]
+    assert kept and kept[0]["source"] == f"project/{old}/front"
+    # later boards: checked against the old look kept as a good example
+    chk = ck.Checks(b.data)
+    chk.start(new, "SN-R1")
+    chk.photo("front", cv2.imencode(".png", fx.render("front", fx.camera("front", tilt_deg=-3, ppi=280)))[1].tobytes())
+    r = next(r for r in chk.cur["sides"]["front"]["results"] if r["ref"] == "C3")
+    assert r["status"] == "ok" and r.get("learned") == "good", r
 
 
 # ---- answers carry to every board of the design; changing the reference ----------------------

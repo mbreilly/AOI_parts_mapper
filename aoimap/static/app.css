@@ -164,6 +164,8 @@ td a:hover { text-decoration: underline; }
 .answers button.on.a-bad { background: var(--st-bad); color: #fff; border-color: var(--st-bad); }
 .answers button.on.a-missing { background: var(--st-missing); color: #2a1300; border-color: var(--st-missing); }
 .answers button.on.a-ns { background: var(--st-ns); color: #1a1a1a; border-color: var(--st-ns); }
+.answers button.on.a-covered { background: var(--st-cant); color: #1d1030; border-color: var(--st-cant); }
+button.a-covered.hint { border-color: var(--st-cant); color: var(--st-cant); margin-top: 4px; }
 button.a-bad, button.a-missing { border-color: #6b2b26; }
 
 /* the selected part, pinned at the top of the side panel */
@@ -319,6 +321,7 @@ table.md td .dim { margin: 2px 0; }
 .verdict.v-wrong { background: var(--st-bad); color: #fff; }
 .verdict.v-unsure { background: var(--accent); color: var(--panelEdge); }
 .verdict.v-ns { background: var(--st-ns); color: #1a1a1a; }
+.verdict.v-covered { background: var(--st-cant); color: #1d1030; }
 .verdict.v-reference { background: var(--screw); color: var(--panelEdge); }
 .selpanel .keys { margin: 6px 0 0; font-size: 12px; opacity: .55; }
 @media (max-height: 800px) {

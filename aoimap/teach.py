@@ -29,7 +29,8 @@ from . import projects as pj
 
 _IMAGES = OrderedDict()       # (path, mtime) -> image; the last few full photos read
 _DESIGNS = {}                 # uid -> (mtime, design with components)
-VERDICTS = {"ok": "correct", "reversed": "wrong", "rotated": "wrong", "fault": "wrong", "check": "unsure", "ns": "ns"}
+VERDICTS = {"ok": "correct", "reversed": "wrong", "rotated": "wrong", "fault": "wrong", "check": "unsure", "ns": "ns",
+            "covered": "covered"}
 
 
 def _image(path: Path):
@@ -253,11 +254,15 @@ def _inspect(data: Path, src: str, ref: str, reference: str | None = None) -> di
            "good": sum(e["label"] == "good" for e in ex), "bad": sum(e["label"] == "bad" for e in ex),
            "examples": [{k: e.get(k, "") for k in ("id", "label", "reason", "note", "serial", "date")} for e in ex[-6:]],
            "answer": None, "verdict": "skipped", "why": ""}
-    mine = [e for e in ex if e.get("source") == src]
+    mine = [e for e in ex if e.get("source") == src and e["label"] in ("good", "bad")]
     if mine:      # the last answer given on this very photo (GOOD or BAD), so the page can show and undo it
         out["taught"] = {"id": mine[-1]["id"], "label": mine[-1]["label"], "reason": mine[-1].get("reason", "")}
     ns = ck.not_stuffed(data, board, side, ck.ns_key(s["serial"], s["uid"])).get(ref)
     out["ns"] = ns or ""        # "board": not stuffed on this board, "all": on every board of the design
+    cov = ck.covered(data, board, side, ck.ns_key(s["serial"], s["uid"])).get(ref)
+    out["covered"] = cov or ""  # what covers it on this board (a heatsink...): can't be seen here, checked on the others
+    rcov = ck.reference_covered(data, board, side, s["reference"]).get(ref, "") if s["reference"] else ""
+    out["reference_covered"] = rcov
     placed = _placed(data, s["reference"], side, ref) if s["reference"] else None
     small = placed and ("via" in placed or (placed.get("reason") or "").startswith("too small"))
     # what the check said, for a part on a checked board
@@ -270,11 +275,18 @@ def _inspect(data: Path, src: str, ref: str, reference: str | None = None) -> di
                        note=r.get("note", ""), reason=r.get("reason", ""), missed=bool(r.get("missed")), status=r["status"])
             if r.get("missed"):
                 out.update(verdict="wrong", why="flagged by a tester though the check passed it")
+            if r.get("suggest"):
+                out.update(suggest=r["suggest"], cover=r.get("cover", ""))
             if ns:
                 out.update(verdict="ns", why=ck.ns_why(ns))
+            elif cov:
+                out.update(verdict="covered", why=ck.cover_why(cov))
             return out
     if ns:
         out.update(verdict="ns", why=ck.ns_why(ns))
+        return out
+    if cov:
+        out.update(verdict="covered", why=ck.cover_why(cov))
         return out
         sk = next((k for k in c["sides"][side].get("skipped", []) if k["ref"] == ref), None)
         if sk:
@@ -306,7 +318,7 @@ def _inspect(data: Path, src: str, ref: str, reference: str | None = None) -> di
     here = _warp(_image(s["img"]), T, R)
     part = {"ref": ref, "kind": out["kind"] or "look", "value": out["value"], "box": [x - R[0], y - R[1], w, h]}
     wrong = ref in ck.load_examples(data, board, side)["reference_wrong"].get(ref_uid, [])
-    res = ck.check_part(here, ref_local, part, margin, ck.example_images(data, board, side).get(ref), wrong)
+    res = ck.check_part(here, ref_local, part, margin, ck.example_images(data, board, side).get(ref), wrong, rcov)
     seen = {"ok": "looks right", "reversed": "looks reversed", "rotated": "looks turned", "fault": "looks like a known fault",
             "check": "can't be told"}[res["status"]] + (f": {res['why']}" if res["why"] and res["status"] != "ok" else "")
     if s["is_reference"]:
@@ -316,21 +328,25 @@ def _inspect(data: Path, src: str, ref: str, reference: str | None = None) -> di
         out.update(verdict="skipped", why=f"{skip} (compared with the reference here, it {seen})")
     else:
         out.update(verdict=VERDICTS[res["status"]], why=res["why"] or seen, status=res["status"])
+        if res.get("suggest"):
+            out.update(suggest=res["suggest"], cover=res.get("cover", ""))
     if out["pending"]:
         out["why"] = "new part, teach me. " + out["why"]
     return out
 
 
 def answers(data: Path, board: str, src: str) -> dict:
-    """{ref: "good" | "bad" | "ns"}: how each part was last taught on this photo (src), or that it's
-    not stuffed on this board, for its map."""
+    """{ref: "good" | "bad" | "ns" | "covered"}: how each part was last taught on this photo (src), or that
+    it's not stuffed or covered on this board, for its map."""
     side = src.rsplit("/", 1)[-1]
-    out = {e["ref"]: e["label"] for e in ck.load_examples(data, board, side)["examples"] if e.get("source") == src}
+    out = {e["ref"]: e["label"] for e in ck.load_examples(data, board, side)["examples"]
+           if e.get("source") == src and e["label"] in ("good", "bad")}
     try:
         s = source(data, src)
     except ValueError:
         return out
-    return out | dict.fromkeys(ck.not_stuffed(data, board, side, ck.ns_key(s["serial"], s["uid"])), "ns")
+    key = ck.ns_key(s["serial"], s["uid"])
+    return out | dict.fromkeys(ck.covered(data, board, side, key), "covered") | dict.fromkeys(ck.not_stuffed(data, board, side, key), "ns")
 
 
 def set_ns(data: Path, src: str, ref: str, on: bool = True, everywhere: bool = False) -> dict:
@@ -346,9 +362,27 @@ def set_ns(data: Path, src: str, ref: str, on: bool = True, everywhere: bool = F
     return s
 
 
+def set_covered(data: Path, src: str, ref: str, on: bool = True, reason: str = "heatsink") -> dict:
+    """COVERED for a part on a photo's board (see check.py): the answers given on this photo (GOOD or BAD)
+    go, as its look here isn't the part's; its look is kept as a "covered" example instead. on=False
+    undoes it. The board check open on the page does this itself (Checks.set_covered)."""
+    s = source(data, src)
+    board, side = s["board"], s["side"]
+    for e in ck.load_examples(data, board, side)["examples"]:
+        if e["ref"] == ref and e.get("source") == src and (e["label"] == "covered" or on):
+            ck.delete_example(data, board, side, e["id"])
+    ck.set_covered(data, board, side, ck.ns_key(s["serial"], s["uid"]), ref, reason, on)
+    if on:
+        try:
+            add(data, src, ref, "covered", note=ck.cover_reason(reason))
+        except ValueError:      # off the photo: COVERED stands without its picture
+            pass
+    return s
+
+
 def add(data: Path, src: str, ref: str, label: str, reason: str = "", note: str = "") -> str:
-    """Keeps the part on this photo as a good or bad example, in the reference's frame."""
-    if label not in ("good", "bad"):
+    """Keeps the part on this photo as a good or bad (or covered) example, in the reference's frame."""
+    if label not in ("good", "bad", "covered"):
         raise ValueError("Answer good or bad.")
     s = source(data, src)
     d, g = _geom(data, s, ref)
