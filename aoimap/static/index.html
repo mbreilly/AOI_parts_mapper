@@ -7,24 +7,21 @@
 <link rel="stylesheet" href="static/app.css?v=teach1">
 </head>
 <body>
-<div class="panel">
-  <header>
+<div class="app">
+  <!-- one line: the app, the project worked in, and what is open -->
+  <header class="top" id="projbar">
     <h1>AOI PARTS MAPPER</h1>
-    <div class="sub" id="sub">ODB++  ·  BOM  ·  photo map</div>
-    <i class="screw tl"></i><i class="screw tr"></i>
-  </header>
-
-  <div class="projbar" id="projbar">
     <span class="lab">PROJECT</span>
-    <select id="pg-select" title="Choose the project to work in: the tabs below show only its boards, checks and history"></select>
-    <span class="dim grow" id="pg-info"></span>
-    <button id="pg-new">NEW PROJECT</button>
-    <button id="pg-rename">RENAME</button>
-    <div class="row" id="pg-form" hidden>
+    <select id="pg-select" title="Choose the project to work in: the tabs show only its boards, checks and history"></select>
+    <span class="dim grow ell" id="pg-info"></span>
+    <span class="row tight" id="pg-form" hidden>
       <input id="pg-name" maxlength="80" placeholder="Project name, e.g. PTC">
       <button id="pg-ok" class="accent">CREATE</button><button id="pg-cancel">CANCEL</button>
-    </div>
-  </div>
+    </span>
+    <details class="more"><summary>MORE</summary>
+      <div class="menu"><button id="pg-new">NEW PROJECT</button><button id="pg-rename">RENAME PROJECT</button></div>
+    </details>
+  </header>
 
   <nav class="tabs" id="tabs">
     <button data-tab="files" class="on">1  FILES</button>
@@ -35,13 +32,16 @@
     <button data-tab="check">CHECK A BOARD</button>
     <button data-tab="history">HISTORY</button>
     <button data-tab="models">MODELS</button>
+    <span class="grow"></span>
+    <span class="sub ell" id="sub">ODB++  ·  BOM  ·  photo map</span>
   </nav>
 
   <div id="msg" class="msg" hidden></div>
 
+  <main class="body">
   <!-- 1 FILES -->
-  <section id="tab-files" class="tab">
-    <div class="cols">
+  <section id="tab-files" class="tab scroll">
+    <div class="cols flow">
       <div class="col">
         <h2>LOAD THE BOARD</h2>
         <label class="drop" id="drop-odb">
@@ -53,7 +53,7 @@
           <b>BOM</b><span>.csv (or .xlsx)</span><em id="bom-state">Not loaded</em>
         </label>
         <div id="project-box" hidden>
-          <h3>THIS BOARD</h3>
+          <h2>THIS BOARD</h2>
           <div class="grid2">
             <span class="lab">SERIAL</span><input id="proj-serial" placeholder="Serial number or label">
             <span class="lab">NOTES</span><textarea id="proj-notes" rows="2" placeholder="Anything worth keeping with this board"></textarea>
@@ -61,7 +61,7 @@
           <div class="row"><button id="proj-new">NEW BOARD, SAME DESIGN</button><span class="dim" id="proj-uid"></span></div>
         </div>
         <div id="boards-box">
-          <h3 id="boards-title">BOARDS IN THIS PROJECT</h3>
+          <h2 id="boards-title">BOARDS IN THIS PROJECT</h2>
           <div id="boards" class="list"></div>
           <div class="row"><button data-goto="history">ALL HISTORY</button></div>
         </div>
@@ -70,7 +70,7 @@
         <h2>THE DESIGN</h2>
         <div id="design-summary"></div>
         <div class="row" id="step-row" hidden><span class="lab">ODB++ STEP</span><select id="step"></select></div>
-        <h3>BOM COLUMNS</h3>
+        <h2>BOM COLUMNS</h2>
         <p class="dim">Check each field reads the right column. Changes are kept for this board.</p>
         <div id="columns" class="grid2"></div>
       </div>
@@ -80,52 +80,55 @@
   <!-- 2 PARTS -->
   <section id="tab-parts" class="tab" hidden>
     <div class="cols">
-      <div class="col wide">
-        <h2>WHICH PARTS TO CHECK</h2>
-        <p class="dim">Every line of the BOM. Tick a line to check its parts (polarised ones are suggested and ticked to start with;
-          others are checked by their look), untick it to take them out. The Front and Back maps are redrawn straight away without
-          lining up again, the reference is updated, and the choices are kept for the next board of this design. Hidden because:
-          parts that can't be seen (under a heatsink or shield). <b>Checked on this board</b> says whether the photos of the board open
-          here show each part; click it to see each part, and a part to look at it.</p>
-        <div class="row">
+      <div class="col wide stack">
+        <div class="bar">
+          <details class="hint"><summary><b>WHICH PARTS TO CHECK</b> · tick a BOM line to put its parts in the check</summary>
+            Every line of the BOM. Polarised lines are suggested and ticked to start with; others are checked by their look. Untick a
+            line to take its parts out. The Front and Back maps are redrawn straight away, the reference is updated, and the choices
+            are kept for the next board of this design. <b>Hidden because</b>: parts that can't be seen (under a heatsink or shield).
+            <b>On this board</b> shows what the photos of the board open here make of each line's parts; press ▸ to see each part,
+            and a part to look at it on its side.</details>
+        </div>
+        <div class="bar">
           <div class="seg" id="line-filter">
             <button data-f="all" class="on">ALL LINES</button><button data-f="in">IN THE CHECK</button><button data-f="out">NOT IN THE CHECK</button>
           </div>
           <input id="line-search" placeholder="Search value, description or ref">
           <span class="dim" id="line-count"></span>
         </div>
-        <div class="row addbar" title="Any part of the design, whether the BOM lists it or marks it polarised or not. Look only is for parts with no polarity mark (is it there, is it the right part). Kept for the next board of this design, and the reference is updated straight away.">
-          <b>ADD ANY PART</b><input id="xp-ref" list="dl-parts" placeholder="Ref, e.g. R12" autocomplete="off">
-          <select id="xp-kind"></select><button id="xp-add" class="accent">ADD</button>
-          <span class="dim">or tick a BOM line. Press ▸ on a line to see its parts on the photos.</span>
+        <div class="bar statusbar" id="parts-legend"></div>
+        <div class="bar addbar" title="Any part of the design, whether the BOM lists it or marks it polarised or not. Look only is for parts with no polarity mark (is it there, is it the right part).">
+          <b>ADD ONE PART</b><input id="xp-ref" list="dl-parts" placeholder="Ref, e.g. R12" autocomplete="off">
+          <select id="xp-kind"></select><button id="xp-add">ADD TO THE CHECK</button>
         </div>
-        <div id="xp-list" class="list"></div>
-        <div id="xp-train" hidden>
-          <h3 id="xp-train-title">TEACH IT</h3>
-          <p class="dim">Train it now on a photo already taken (pick one, then answer GOOD or BAD), or press <b>Wait for a new photo</b>:
-            the next Check a board of that side asks about it until it's answered.</p>
-          <div class="row"><select id="xp-src"></select><button id="xp-wait">WAIT FOR A NEW PHOTO</button><button id="xp-close">CLOSE</button></div>
-          <div id="xp-insp"></div>
+        <div class="scroller" id="parts-scroll">
+          <div id="xp-train" class="insp" hidden>
+            <div class="row"><b id="xp-train-title">TEACH IT</b><span class="grow"></span><button id="xp-close">CLOSE</button></div>
+            <p class="dim">Train it on a photo already taken (pick one, then answer GOOD or BAD), or wait for a new photo:
+              the next Check a board of that side asks about it until it's answered.</p>
+            <div class="row"><select id="xp-src"></select><button id="xp-wait">WAIT FOR A NEW PHOTO</button></div>
+            <div id="xp-insp"></div>
+          </div>
+          <div id="xp-list" class="list"></div>
+          <table id="lines" class="sticky"><thead></thead><tbody></tbody></table>
         </div>
-        <div class="tablewrap"><table id="lines"><thead></thead><tbody></tbody></table></div>
       </div>
-      <div class="col">
+      <div class="col side fixed">
         <h2>MARKINGS</h2>
-        <p class="dim">Which end of a two-pin part has the band or + sign. Footprint libraries differ, so check one
-          board.</p>
+        <details class="hint"><summary>Which end has the band or + sign</summary>Footprint libraries differ, so check one board.</details>
         <div id="markings"></div>
         <h2>ROTATION</h2>
-        <p class="dim" id="rot-note"></p>
+        <details class="hint"><summary id="rot-note-short">Which way the design's rotations run</summary><span id="rot-note"></span></details>
         <div class="seg" id="rot-sign">
           <button data-v="auto">AUTO</button><button data-v="-1">CLOCKWISE</button><button data-v="1">ANTICLOCKWISE</button>
         </div>
         <h2>SIZE NEEDED</h2>
-        <p class="dim">A part narrower than this in a photo can't be checked; the app plans closeups for it.</p>
-        <div class="knobrow"><div class="knob" id="knob-minpx" data-min="6" data-max="40" data-step="1"
-             data-unit="px" data-label="MIN PART SIZE"></div></div>
+        <details class="hint"><summary>Smallest part a photo can check</summary>A part narrower than this in a photo can't be
+          checked; the app plans closeups for it.</details>
+        <label class="slider"><span class="lab">MIN PART SIZE</span><input type="range" id="minpx" min="6" max="40" step="1"><output id="minpx-v"></output></label>
         <h2>LINING UP</h2>
-        <label class="check"><input type="checkbox" id="use-tant"> Also use tantalum capacitors as anchors (helps with lens
-          bending; off by default)</label>
+        <label class="check"><input type="checkbox" id="use-tant"> Also use tantalum capacitors as anchors</label>
+        <p class="dim">Helps with lens bending; off by default.</p>
       </div>
     </div>
   </section>
@@ -134,73 +137,67 @@
   <section id="tab-side" class="tab" hidden>
     <div class="cols">
       <div class="col viewcol">
-        <div class="viewer" id="viewer">
-          <video id="video" autoplay playsinline muted hidden></video>
-          <img id="live" alt="" hidden>
-          <img id="ghost" class="ghost" alt="" hidden>
-          <img id="photo" alt="" hidden>
-          <svg id="marks" class="marks"></svg>
-          <div id="placeholder" class="placeholder">No photo yet. Start the camera or choose a file.</div>
-        </div>
-        <div class="row" id="cam-row">
+        <div class="bar" id="cam-row">
           <button id="cam-start">START CAMERA</button>
           <select id="cam-list" hidden></select>
           <button id="cam-take" class="accent" hidden>TAKE PHOTO</button>
           <label class="btn">CHOOSE FILE<input type="file" id="photo-file" accept="image/*" hidden></label>
           <span class="sep"></span>
-          <label class="check"><input type="checkbox" id="ghost-on" checked> Ghost</label>
-          <div class="knob small" id="knob-ghost" data-min="0" data-max="100" data-step="5" data-unit="%"
-               data-label="GHOST"></div>
-          <div class="knob small" id="knob-zoom" data-min="100" data-max="400" data-step="25" data-unit="%"
-               data-label="ZOOM"></div>
+          <label class="check" title="Over the live camera: the last photo of this side, or the design as it should lie"><input type="checkbox" id="ghost-on" checked> Ghost</label>
+          <input type="range" id="ghost-op" min="0" max="100" step="5" title="How strongly the ghost shows">
+          <span class="grow"></span>
+          <span class="zoombar" id="zoom-side"></span>
         </div>
-      </div>
-      <div class="col sidecol">
-        <h2 id="side-title">FRONT</h2>
-        <div class="row"><span class="lab">HOW THE BOARD LIES</span></div>
-        <div class="seg" id="orient"></div>
-
-        <div id="align-box" hidden>
-          <h3>LINE UP THE PHOTO</h3>
-          <p class="dim" id="align-help">Click each point on the photo, in order. Clicks snap to the pad.</p>
-          <div id="prompts" class="list"></div>
-          <div class="row">
-            <button id="auto-find">FIND THEM</button>
-            <button id="clear-pts">CLEAR</button>
-            <button id="do-align" class="accent">LINE UP</button>
+        <div class="viewer" id="viewer">
+          <div class="stage" id="stage">
+            <video id="video" autoplay playsinline muted hidden></video>
+            <img id="live" alt="" hidden>
+            <img id="photo" alt="" hidden draggable="false">
+            <img id="ghost" class="ghost" alt="" hidden>
+            <svg id="parts-svg" class="marks parts"></svg>
+            <svg id="marks" class="marks"></svg>
           </div>
-          <div id="align-result"></div>
+          <div id="placeholder" class="placeholder">No photo yet. Start the camera or choose a file.</div>
         </div>
-
-        <div id="rot-box" hidden>
-          <h3>ROTATION CHECK</h3>
-          <p class="dim" id="rot-help"></p>
-          <div class="pair" id="rot-crops"></div>
-        </div>
-
+        <div class="bar statusbar" id="side-legend"></div>
+      </div>
+      <div class="col side" id="side-col">
+        <details class="setup" id="setup">
+          <summary><b id="side-title">FRONT</b> <span class="dim" id="setup-sum">Set up this photo</span><span class="grow"></span><span class="change" id="setup-change">CHANGE</span></summary>
+          <div class="setup-body">
+            <h3>HOW THE BOARD LIES</h3>
+            <div class="seg" id="orient"></div>
+            <div id="align-box" hidden>
+              <h3>LINE UP THE PHOTO</h3>
+              <p class="dim" id="align-help">Click each point on the photo, in order. Clicks snap to the pad.</p>
+              <div id="prompts" class="list"></div>
+              <div class="row">
+                <button id="auto-find">FIND THEM</button>
+                <button id="clear-pts">CLEAR</button>
+                <button id="do-align" class="accent">LINE UP</button>
+              </div>
+              <div id="align-result"></div>
+            </div>
+            <div id="rot-box" hidden>
+              <h3>ROTATION CHECK</h3>
+              <p class="dim" id="rot-help"></p>
+              <div class="pair" id="rot-crops"></div>
+            </div>
+          </div>
+        </details>
         <div id="closeup-box" hidden>
           <h3>CLOSEUPS FOR SMALL PARTS</h3>
-          <p class="dim">These parts are too small in the full photo. Take a closer photo of each area, then click the
-            points listed to line it up.</p>
+          <details class="hint"><summary>These parts are too small in the full photo</summary>Take a closer photo of each area, then
+            click the points listed to line it up.</details>
           <div id="tiles" class="list"></div>
         </div>
-
-        <div id="look-box" hidden>
-          <h3>LOOK AT A PART</h3>
-          <p class="dim">Any part of the design: type its ref or value, or click it on the photo. See what the app makes of it, and tell
-            it if it's GOOD or BAD; that's kept as a learned example, and a part it skipped is checked on later boards.</p>
-          <div class="row"><input id="look-ref" list="dl-parts" placeholder="Ref or value" autocomplete="off"><button id="look-go">LOOK</button>
-            <label class="check"><input type="checkbox" id="look-pick" checked> Click the photo to pick a part</label></div>
-          <div id="look-insp"></div>
-        </div>
-
+        <div id="sel-part" class="selpanel" hidden></div>
         <div id="parts-box" hidden>
-          <h3>PARTS ON THIS SIDE</h3>
-          <div class="row"><div class="seg" id="parts-filter">
-            <button data-f="all" class="on">ALL</button><button data-f="yes">CHECKABLE</button><button data-f="no">NOT</button>
-          </div><label class="check"><input type="checkbox" id="marks-on" checked> Markings</label></div>
-          <div class="tablewrap short"><table id="side-parts"><thead><tr>
-            <th>Ref</th><th>Kind</th><th>Value</th><th>Pin 1</th><th>Size</th><th>Check</th></tr></thead><tbody></tbody></table></div>
+          <div class="row tight listbar">
+            <input id="side-q" placeholder="Find a ref or value (Enter selects it)" autocomplete="off" list="dl-parts">
+            <label class="check" title="Pin 1 dots and polarity marks on the photo"><input type="checkbox" id="marks-on" checked> Marks</label>
+          </div>
+          <div class="list partlist" id="side-parts"></div>
         </div>
       </div>
     </div>
@@ -210,55 +207,52 @@
   <section id="tab-map" class="tab" hidden>
     <div class="cols">
       <div class="col viewcol">
-        <div class="row bv-bar">
+        <div class="bar bv-bar">
           <input id="bv-q" list="dl-bv" placeholder="Find a ref, value or net" autocomplete="off">
           <button id="bv-flip" title="Show the other side of the board (key F)">FLIP (F)</button>
           <span class="bv-side" id="bv-side">FRONT</span>
-          <button id="bv-fit" title="Show the whole board (key 0)">FIT</button>
+          <span class="sep"></span>
           <label class="check" title="Draw the parts on the lined-up photo of this side"><input type="checkbox" id="bv-photo-on" checked> Photo</label>
-          <div class="knob small" id="knob-bvop" data-min="0" data-max="100" data-step="5" data-unit="%" data-label="PHOTO"></div>
+          <input type="range" id="bv-op" min="0" max="100" step="5" title="How strongly the photo shows">
           <label class="check" title="Lines joining the pins of the chosen net"><input type="checkbox" id="bv-rats"> Net lines</label>
+          <span class="grow"></span>
+          <span class="zoombar" id="zoom-map"><button data-z="out" title="Zoom out">−</button><button data-z="in" title="Zoom in">+</button><button data-z="fit" id="bv-fit" title="Show the whole board (key 0)">FIT</button></span>
         </div>
         <div class="bv" id="bv"><canvas id="bv-canvas"></canvas><div class="bv-hover" id="bv-hover" hidden></div></div>
-        <div class="bv-legend dim">
-          <span><i class="lg good"></i>checked / GOOD</span><span><i class="lg bad"></i>BAD</span><span><i class="lg ns"></i>NS (not stuffed)</span>
-          <span><i class="lg skip"></i>in the check, not on a photo</span><span><i class="lg off"></i>not in the check</span>
-          <span class="grow"></span><span>Wheel: zoom · drag: move · click a part or pin · F: flip · 0: fit · Esc: clear</span>
-        </div>
-        <p class="dim" id="bv-notes"></p>
+        <div class="bar statusbar" id="map-legend"></div>
       </div>
-      <div class="col sidecol">
-        <h2>BOARD VIEW</h2>
+      <div class="col side">
         <div id="bv-info"><p class="dim">Click a part or pin on the board, or find a ref, value or net above.</p></div>
         <h2>THE PARTS MAP</h2>
         <div id="map-summary"></div>
         <div class="row">
-          <a class="btn accent" id="dl-csv" href="api/parts_map.csv">DOWNLOAD CSV</a>
-          <a class="btn" id="dl-json" href="api/design.json" download="design.json">DESIGN JSON</a>
-          <button id="map-ref">USE AS THE REFERENCE FOR CHECKS</button>
+          <button id="map-ref" class="accent">USE AS THE REFERENCE FOR CHECKS</button>
+          <details class="more"><summary>MORE</summary><div class="menu">
+            <a class="btn" id="dl-csv" href="api/parts_map.csv">DOWNLOAD CSV</a>
+            <a class="btn" id="dl-json" href="api/design.json" download="design.json">DESIGN JSON</a></div></details>
         </div>
-        <p class="dim" id="map-ref-note">Once this board has been checked by hand, make it the reference: other boards of this
-          type can then be checked against it on the Check a board tab.</p>
-        <p class="dim" id="map-folder"></p>
-        <h3>CAN'T BE CHECKED</h3>
-        <div class="tablewrap"><table id="unchecked"><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody></tbody></table></div>
+        <details class="hint"><summary id="map-ref-note">Once this board has been checked by hand, make it the reference.</summary>
+          <span id="map-folder"></span></details>
+        <p class="dim" id="bv-notes"></p>
+        <h2>CAN'T BE CHECKED</h2>
+        <table id="unchecked"><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody></tbody></table>
       </div>
     </div>
   </section>
+
   <!-- MODELS -->
-  <section id="tab-models" class="tab" hidden>
-    <div class="cols">
+  <section id="tab-models" class="tab scroll">
+    <div class="cols flow">
       <div class="col wide">
-        <h2>MODELS</h2>
-        <p class="dim">Three small models, one for each job of the check, trained on this machine from your answers (GOOD, BAD,
-          MISSING, NS) and from the reference board. They give an extra opinion with a confidence (on Check a board and Look at
-          a part, as "Models think"); the check's own answer is still what counts. Retrain after teaching more parts.</p>
-        <p class="dim"><b>Accuracy</b> is tested on parts each model wasn't trained on: the examples of each part are kept out in
-          turn (5 rounds) and it's the share it got right. "Guessing" is what always giving the most common answer would get.
-          Auto-made examples (the reference board's parts, turned copies of right ones, bare DNP pads) fill in until there are
-          enough of your own answers. Accuracy measured mostly on auto-made examples is a rough guide until more real answers
-          exist. A model's opinion is shown only once it has enough examples and 75% accuracy or more.</p>
-        <label class="check"><input type="checkbox" id="md-all"> All projects</label>
+        <div class="row"><h2 class="grow">MODELS</h2><label class="check"><input type="checkbox" id="md-all"> All projects</label></div>
+        <details class="hint"><summary>Three small models, trained on this machine from your answers, give an extra opinion on each part</summary>
+          One for each job of the check, trained from your answers (GOOD, BAD, MISSING, NS) and from the reference board. They give
+          an extra opinion with a confidence (on Check a board and on a selected part, as "Models think"); the check's own answer is
+          still what counts. Retrain after teaching more parts. <b>Accuracy</b> is tested on parts each model wasn't trained on: the
+          examples of each part are kept out in turn (5 rounds) and it's the share it got right. "Guessing" is what always giving the
+          most common answer would get. Auto-made examples (the reference board's parts, turned copies of right ones, bare DNP pads)
+          fill in until there are enough of your own answers. A model's opinion is shown only once it has enough examples and 75%
+          accuracy or more.</details>
         <div id="md-list"></div>
       </div>
     </div>
@@ -268,15 +262,7 @@
   <section id="tab-check" class="tab" hidden>
     <div class="cols">
       <div class="col viewcol">
-        <div class="viewer" id="ck-viewer">
-          <video id="ck-video" autoplay playsinline muted hidden></video>
-          <img id="ck-live" alt="" hidden>
-          <img id="ck-ghost" class="ghost" alt="" hidden>
-          <img id="ck-photo" alt="" hidden>
-          <svg id="ck-marks" class="marks"></svg>
-          <div id="ck-placeholder" class="placeholder">Start a check, then take or choose a photo of the board.</div>
-        </div>
-        <div class="row" id="ck-cam-row">
+        <div class="bar" id="ck-cam-row">
           <button id="ck-cam-start">START CAMERA</button>
           <select id="ck-cam-list" hidden></select>
           <button id="ck-cam-take" class="accent" hidden>TAKE PHOTO</button>
@@ -285,13 +271,25 @@
           <label class="check"><input type="checkbox" id="ck-ghost-on" checked> Ghost of the reference</label>
           <span class="sep"></span>
           <div class="seg" id="ck-view"><button data-v="result" class="on">RESULT</button><button data-v="photo">PHOTO</button></div>
+          <span class="grow"></span>
+          <span class="zoombar" id="zoom-ck"></span>
+        </div>
+        <div class="viewer" id="ck-viewer">
+          <div class="stage" id="ck-stage">
+            <video id="ck-video" autoplay playsinline muted hidden></video>
+            <img id="ck-live" alt="" hidden>
+            <img id="ck-photo" alt="" hidden draggable="false">
+            <img id="ck-ghost" class="ghost" alt="" hidden>
+            <svg id="ck-marks" class="marks"></svg>
+          </div>
+          <div id="ck-placeholder" class="placeholder">Start a check, then take or choose a photo of the board.</div>
         </div>
       </div>
-      <div class="col sidecol">
+      <div class="col side">
         <div id="ck-start">
           <h2>CHECK A BOARD</h2>
-          <p class="dim">A quick look that a board's polarised parts are all the right way round, against a board of the same
-            type that was mapped and checked by hand (the reference). Not a production test.</p>
+          <details class="hint"><summary>Are a board's polarised parts the right way round?</summary>A quick look, against a board of
+            the same type that was mapped and checked by hand (the reference). Not a production test.</details>
           <div class="grid2">
             <span class="lab">BOARD TYPE</span><select id="ck-ref"></select>
             <span class="lab">SERIAL</span><input id="ck-serial" placeholder="Serial number or label">
@@ -302,9 +300,13 @@
             <b>Use as the reference for checks</b> on the Map tab.</p>
         </div>
         <div id="ck-run" hidden>
-          <h2 id="ck-title"></h2>
-          <div class="row"><span class="badge" id="ck-result"></span><span class="dim" id="ck-sub"></span></div>
-          <div class="seg" id="ck-sides"></div>
+          <div class="row"><h2 id="ck-title" class="grow"></h2><span class="badge" id="ck-result"></span>
+            <details class="more"><summary>MORE</summary><div class="menu">
+              <button data-goto="history" data-hist="checks">PAST CHECKS</button>
+              <button id="ck-learned">WHAT THE CHECK HAS LEARNED</button></div></details></div>
+          <p class="dim" id="ck-sub"></p>
+          <div class="row"><div class="seg" id="ck-sides"></div><span class="grow"></span><button id="ck-new">CHECK ANOTHER BOARD</button></div>
+          <div class="statusbar" id="ck-legend"></div>
           <div id="ck-msg" class="warn" hidden></div>
           <div id="ck-points" hidden>
             <h3>CLICK THE FIDUCIALS</h3>
@@ -313,17 +315,15 @@
             <div class="row"><button id="ck-clear">CLEAR</button><button id="ck-align" class="accent">LINE UP</button></div>
           </div>
           <div id="ck-look" hidden>
-            <h3>LOOK AT ANY PART</h3>
-            <div class="row"><input id="ck-look-ref" list="dl-parts" placeholder="Ref or value (or click it on the result photo)" autocomplete="off">
+            <div class="row tight"><input id="ck-look-ref" list="dl-parts" placeholder="Look at any part: ref or value, or click it on the photo" autocomplete="off">
               <button id="ck-look-go">LOOK</button></div>
             <div id="ck-insp"></div>
           </div>
           <div id="ck-flagged"></div>
           <div id="ck-ok"></div>
-          <div class="row"><button id="ck-new">CHECK ANOTHER BOARD</button><button data-goto="history" data-hist="checks">PAST CHECKS</button>
-            <button id="ck-learned">WHAT THE CHECK HAS LEARNED</button></div>
-          <p class="dim">Every answer teaches the check: Right way round keeps that part as a good example, Wrong as a bad one with
-            its reason and your note. Next time a part like a good example isn't flagged, and one like a bad example is flagged as a known fault.</p>
+          <details class="hint"><summary>Every answer teaches the check</summary>GOOD keeps that part as a good example, BAD as a bad one
+            with its reason and your note. Next time a part like a good example isn't flagged, and one like a bad example is flagged
+            as a known fault.</details>
         </div>
       </div>
     </div>
@@ -332,20 +332,22 @@
   <!-- HISTORY -->
   <section id="tab-history" class="tab" hidden>
     <div class="cols">
-      <div class="col">
-        <div class="row"><div class="seg" id="hist-kind"><button data-k="projects" class="on">MAPPED BOARDS</button><button data-k="checks">CHECKS</button><button data-k="learned">LEARNED</button></div></div>
-        <div class="row"><input id="hist-search" placeholder="Board, serial, notes or file name (* matches any part)">
-          <label class="check" title="Show every project's boards, checks and learned examples, not only this project's"><input type="checkbox" id="hist-all"> All projects</label></div>
-        <p class="dim" id="hist-status"></p>
-        <div class="tablewrap"><table id="hist-list"><thead><tr>
-          <th id="hist-c1">Updated</th><th id="hist-c2">Board</th><th id="hist-c3">Serial</th><th id="hist-c4">Front</th><th id="hist-c5">Back</th></tr></thead><tbody></tbody></table></div>
-      </div>
-      <div class="col wide" id="hist-detail">
-        <p class="dim">Choose a project to see its files, photos and log.</p>
+      <div class="col wide stack">
+        <div class="bar">
+          <div class="seg" id="hist-kind"><button data-k="projects" class="on">MAPPED BOARDS</button><button data-k="checks">CHECKS</button><button data-k="learned">LEARNED</button></div>
+          <input id="hist-search" placeholder="Board, serial, notes or file name (* matches any part)">
+          <label class="check" title="Show every project's boards, checks and learned examples, not only this project's"><input type="checkbox" id="hist-all"> All projects</label>
+          <span class="dim" id="hist-status"></span>
+        </div>
+        <div class="scroller" id="hist-scroll">
+          <table id="hist-list" class="sticky"><thead><tr>
+            <th id="hist-c1">Updated</th><th id="hist-c2">Board</th><th id="hist-c3">Serial</th><th id="hist-c4">Front</th><th id="hist-c5">Back</th></tr></thead><tbody></tbody></table>
+          <div id="hist-detail" class="histdetail"></div>
+        </div>
       </div>
     </div>
   </section>
-  <i class="screw bl"></i><i class="screw br"></i>
+  </main>
 </div>
 <datalist id="dl-parts"></datalist>
 <datalist id="dl-bv"></datalist>

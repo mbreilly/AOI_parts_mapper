@@ -8,17 +8,18 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "
 let S = null;                 // server state
 let tab = "files";
 const ui = {
-  lineFilter: "all", lineSearch: "", openLines: new Set(), partsFilter: "all", highlight: null, marks: true,
+  lineFilter: "all", lineSearch: "", openLines: new Set(), highlight: null, marks: true,
   pts: { front: {}, back: {} }, cur: { front: 0, back: 0 },
   anchors: { front: null, back: null },
   closeup: null,              // {side, index, pts, cur} while working on a closeup
-  ghostOn: true, ghostOp: 35, zoom: 100, stream: null, rot: {},
-  pick: true,                 // clicks on a lined-up photo pick a part to look at (not a fiducial)
-  look: { front: null, back: null },   // the part looked at on each side
+  ghostOn: true, ghostOp: 35, stream: null, rot: {},
+  pick: true,                 // clicks on a lined-up photo pick a part (not a fiducial); off while the setup is open
+  look: { front: null, back: null },   // the part selected on each side
+  sideStat: "all", partsStat: "all", setupOpen: false, badPick: false,
 };
 try { Object.assign(ui, JSON.parse(localStorage.getItem("aoimap-ui") || "{}"), { pts: { front: {}, back: {} }, closeup: null, stream: null, anchors: { front: null, back: null }, rot: {} }); } catch (e) { /* private window */ }
 if (!["all", "in", "out"].includes(ui.lineFilter)) ui.lineFilter = "all";
-const keepUi = () => { try { localStorage.setItem("aoimap-ui", JSON.stringify({ lineFilter: ui.lineFilter, partsFilter: ui.partsFilter, ghostOn: ui.ghostOn, ghostOp: ui.ghostOp, zoom: ui.zoom, marks: ui.marks })); } catch (e) { } };
+const keepUi = () => { try { localStorage.setItem("aoimap-ui", JSON.stringify({ lineFilter: ui.lineFilter, ghostOn: ui.ghostOn, ghostOp: ui.ghostOp, marks: ui.marks })); } catch (e) { } };
 
 const KIND_NAMES = { ic: "IC", tantalum: "Tantalum", electrolytic: "Electrolytic", diode: "Diode", led: "LED", other: "Other", look: "Look only" };
 const SIDES = { front: "top", back: "bot" };
@@ -32,8 +33,9 @@ const ORIENTS = {
 function say(text, err = false) {
   const m = $("#msg");
   if (!text) { m.hidden = true; return; }
-  m.hidden = false; m.textContent = text; m.className = "msg" + (err ? " err" : "");
+  m.hidden = false; m.textContent = text; m.className = "msg" + (err ? " err" : ""); m.title = "Click to close";
 }
+$("#msg").addEventListener("click", () => say(""));
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
   let j = null;
@@ -69,7 +71,7 @@ function renderProjBar() {
     `Design ${g.boards.join(", ")}  ·  ${plural(g.mapped, "board")} mapped` +
     `  ·  ${plural(g.references, "reference")}  ·  ${plural(g.checks, "check")}  ·  ${g.learned} learned`;
   $("#pg-rename").disabled = !g;
-  $("#pg-form").hidden = !G.form;
+  $("#pg-form").hidden = !G.form; $("#pg-info").hidden = !!G.form;
   $("#pg-ok").textContent = G.form === "rename" ? "RENAME" : "CREATE";
 }
 function groupsDone(r, done) {
@@ -88,6 +90,10 @@ $("#pg-select").addEventListener("change", async e => {
     const g = r.groups.projects.find(x => x.id === r.groups.current);
     groupsDone(r, `Project ${g.name}` + (r.state.project ? `: ${r.state.project.board}${r.state.project.serial ? " " + r.state.project.serial : ""} is open.` : ". Load its ODB++ and BOM on Files."));
   } catch (err) { say(err.message, true); renderProjBar(); }
+});
+// MORE menus close once a choice is made, or on a click anywhere else
+document.addEventListener("click", e => {
+  for (const d of $$("details.more[open]")) if (!d.contains(e.target) || e.target.closest(".menu > *")) d.open = false;
 });
 $("#pg-new").addEventListener("click", () => { G.form = "new"; $("#pg-name").value = ""; renderProjBar(); $("#pg-name").focus(); });
 $("#pg-rename").addEventListener("click", () => { const g = curGroup(); if (!g) return; G.form = "rename"; $("#pg-name").value = g.name; renderProjBar(); $("#pg-name").focus(); });
@@ -108,45 +114,127 @@ $("#pg-ok").addEventListener("click", async () => {
   } catch (e) { say(e.message, true); }
 });
 
-// ---- knobs (hardware-panel style) ---------------------------------------------------------
-function knob(el, value, onChange, fmt = v => v) {
-  const min = +el.dataset.min, max = +el.dataset.max, step = +el.dataset.step || 1;
-  el.innerHTML = `<div class="kl">${esc(el.dataset.label)}</div><svg viewBox="-50 -50 100 100"></svg><div class="kv2"></div>`;
-  const svg = $("svg", el), box = $(".kv2", el);
-  let v = value;
-  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  function draw() {
-    const a0 = Math.PI * 1.25, a1 = Math.PI * 2.75, pos = (v - min) / (max - min), a = a0 + pos * (a1 - a0), r = 46;
-    const P = (rr, aa) => [rr * Math.sin(aa), -rr * Math.cos(aa)];
-    let s = "";
-    for (let i = 0; i <= 10; i++) {
-      const t = a0 + i / 10 * (a1 - a0), [x1, y1] = P(r * 0.92, t), [x2, y2] = P(r * (i % 5 ? 0.97 : 1), t);
-      s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${css("--dimInk")}" stroke-width="${i % 5 ? 1 : 1.6}"/>`;
-    }
-    const [ax, ay] = P(r * 0.84, a0), [bx, by] = P(r * 0.84, a);
-    if (pos > 0.001) s += `<path d="M${ax} ${ay} A${r * 0.84} ${r * 0.84} 0 ${a - a0 > Math.PI ? 1 : 0} 1 ${bx} ${by}" fill="none" stroke="${css("--accent")}" stroke-width="2.5" stroke-linecap="round"/>`;
-    const kr = r * 0.7, cap = kr * 0.78, kb = css("--knobBody");
-    s += `<defs><linearGradient id="sk${el.id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="color-mix(in srgb, ${kb} 84%, white)"/><stop offset="1" stop-color="${kb}"/></linearGradient>
-      <linearGradient id="cp${el.id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="color-mix(in srgb, ${kb} 90%, white)"/><stop offset="1" stop-color="color-mix(in srgb, ${kb} 40%, black)"/></linearGradient></defs>
-      <circle cx="1.5" cy="3" r="${kr}" fill="black" opacity=".5"/><circle r="${kr}" fill="url(#sk${el.id})"/><circle r="${cap}" fill="url(#cp${el.id})"/>`;
-    const [p1x, p1y] = P(kr * 0.25, a), [p2x, p2y] = P(kr * 0.92, a);
-    s += `<line x1="${p1x}" y1="${p1y}" x2="${p2x}" y2="${p2y}" stroke="${css("--ink")}" stroke-width="2.2" stroke-linecap="round"/>`;
-    svg.innerHTML = s;
-    box.textContent = `${fmt(v)} ${el.dataset.unit || ""}`;
-  }
-  let drag = null;
-  svg.addEventListener("pointerdown", e => { drag = { y: e.clientY, v }; svg.setPointerCapture(e.pointerId); });
-  svg.addEventListener("pointermove", e => {
-    if (!drag) return;
-    const nv = Math.min(max, Math.max(min, Math.round((drag.v + (drag.y - e.clientY) * (max - min) / 150) / step) * step));
-    if (nv !== v) { v = nv; draw(); onChange(v, false); }
-  });
-  svg.addEventListener("pointerup", () => { if (drag) { drag = null; onChange(v, true); } });
-  svg.addEventListener("wheel", e => { e.preventDefault(); v = Math.min(max, Math.max(min, v + (e.deltaY < 0 ? step : -step))); draw(); onChange(v, true); }, { passive: false });
-  draw();
-  return { set(nv) { v = nv; draw(); } };
+// ---- one part status, the same words and colours on every tab -----------------------------
+// From the viewer's status (viewer.py): answered on this board's photo (GOOD, BAD, MISSING, NS), in the
+// check (its photo shows it, or there's no lined-up photo yet), in the check but the photo can't show
+// it, or not in the check.
+const STATUS = {
+  in: { t: "IN THE CHECK", n: "in the check", tip: "In the check, not answered on this board" },
+  good: { t: "GOOD", n: "good", tip: "Answered GOOD on this board" },
+  bad: { t: "BAD", n: "bad", tip: "Answered BAD on this board" },
+  missing: { t: "MISSING", n: "missing", tip: "Answered MISSING on this board" },
+  ns: { t: "NS", n: "NS", tip: "Not stuffed: left off on purpose" },
+  cant: { t: "CAN'T BE SEEN", n: "can't be seen", tip: "In the check, but the photo can't show it (too small, hidden, off the photo)" },
+  off: { t: "NOT CHECKED", n: "not checked", tip: "In the design, not in the check" },
+};
+const STATUS_COL = { in: "#5BB8F5", good: "#6FCF73", bad: "#FF5C5C", missing: "#FF9A3D", ns: "#B4B4B4", cant: "#C49BFF", off: "#8A909C" };
+function ustat(o) {
+  if (!o) return "off";
+  return { good: "good", bad: o.reason === "missing" ? "missing" : "bad", ns: "ns", checked: "in", nophoto: "in", skipped: "cant" }[o.st] || "off";
 }
+const chip = (k, extra = "", cls = "") => `<span class="chip st-${k} ${cls}" title="${esc(STATUS[k].tip)}">${STATUS[k].t}${extra}</span>`;
+// what a count in the legend picks: "check" is everything in the check, answered or not
+const STAT_PICK = { all: () => true, check: k => k !== "off", in: k => k === "in", good: k => k === "good", wrong: k => k === "bad" || k === "missing", missing: k => k === "missing",
+  ns: k => k === "ns", cant: k => k === "cant", off: k => k === "off" };
+// the legend with counts: always on screen under a board; a count is a filter (again: all)
+function statusBar(el, keys, cur, noun) {
+  const n = k => keys.filter(STAT_PICK[k]).length;
+  const item = (f, sk, label) => `<button class="count st-${sk} ${cur === f ? "on" : ""}" data-stat="${f}" title="${esc(sk === "all" ? "Show every part" : f === "check" ? "Every part in the check, answered or not" : STATUS[sk].tip)}${f === "all" ? "" : " · click to show only these"}"><i></i><b>${n(f)}</b><span>${label}</span></button>`;
+  el.innerHTML = `<button class="count all ${cur === "all" ? "on" : ""}" data-stat="all"><b>${keys.length}</b><span>${noun}</span></button>`
+    + item("check", "in", "in the check") + item("good", "good", "good") + item("wrong", "bad", "wrong")
+    + item("missing", "missing", "missing")
+    + item("ns", "ns", "NS") + item("cant", "cant", "can't be seen") + item("off", "off", "not checked");
+}
+// the whole design's status, read again whenever the server state changes
+const PS = { key: null, parts: {}, wait: null };
+async function loadStatus(force = false) {
+  if (!S || !S.design || !S.project) { PS.parts = {}; return PS.parts; }
+  const key = `${S.project.uid}|${S._r || ""}|${S._v || ""}`;
+  if (!force && PS.key === key) return PS.parts;
+  if (PS.wait && PS.waitKey === key && !force) return PS.wait;
+  PS.waitKey = key;
+  PS.wait = api("api/viewer/status").then(r => { PS.parts = r.parts; PS.key = key; return PS.parts; })
+    .catch(() => PS.parts).finally(() => { PS.wait = null; });
+  return PS.wait;
+}
+const pstat = ref => ustat(PS.parts[ref]);
 
+// ---- photo viewers: wheel or pinch to zoom, drag to move, − + FIT 100% -------------------------
+// The stage is the photo at its own pixel size; a transform scales and moves it inside the viewer.
+function zoomer(view, stage, bar) {
+  const z = { k: 1, tx: 0, ty: 0, w: 0, h: 0, fitted: true, moved: false };
+  if (bar) bar.innerHTML = `<button data-z="out" title="Zoom out (or the mouse wheel)">−</button><output>100%</output><button data-z="in" title="Zoom in">+</button>`
+    + `<button data-z="fit" title="Show the whole photo">FIT</button><button data-z="one" title="One photo pixel per screen pixel">100%</button>`;
+  const fitK = () => { const r = view.getBoundingClientRect(); return z.w && r.width ? Math.min(r.width / z.w, r.height / z.h) : 1; };
+  z.apply = () => {
+    stage.style.width = z.w + "px"; stage.style.height = z.h + "px";
+    stage.style.transform = `translate(${z.tx}px, ${z.ty}px) scale(${z.k})`;
+    if (bar) $("output", bar).textContent = Math.round(z.k * 100) + "%";
+    if (z.onchange) z.onchange();
+  };
+  z.fit = () => {
+    const r = view.getBoundingClientRect(); if (!z.w || !r.width) return;
+    z.k = fitK(); z.tx = (r.width - z.w * z.k) / 2; z.ty = (r.height - z.h * z.k) / 2; z.fitted = true; z.apply();
+  };
+  z.size = (w, h) => { if (w && h && (w !== z.w || h !== z.h)) { z.w = w; z.h = h; z.fit(); } };
+  z.at = (k, cx, cy) => {
+    const nk = Math.min(Math.max(k, fitK() * 0.5), 8);
+    z.tx = cx - (cx - z.tx) * nk / z.k; z.ty = cy - (cy - z.ty) * nk / z.k; z.k = nk; z.fitted = false; z.apply();
+  };
+  const mid = () => { const r = view.getBoundingClientRect(); return [r.width / 2, r.height / 2]; };
+  // bring a point of the photo (stage pixels) into view, keeping the zoom
+  z.show = (x, y) => {
+    const r = view.getBoundingClientRect(), sx = z.tx + x * z.k, sy = z.ty + y * z.k, m = 30;
+    if (z.fitted || (sx > m && sy > m && sx < r.width - m && sy < r.height - m)) return;
+    z.tx = r.width / 2 - x * z.k; z.ty = r.height / 2 - y * z.k; z.fitted = false; z.apply();
+  };
+  if (bar) bar.addEventListener("click", e => {
+    const b = e.target.closest("[data-z]"); if (!b) return;
+    const [cx, cy] = mid();
+    ({ in: () => z.at(z.k * 1.4, cx, cy), out: () => z.at(z.k / 1.4, cx, cy), fit: z.fit, one: () => z.at(1, cx, cy) })[b.dataset.z]();
+  });
+  view.addEventListener("wheel", e => {
+    if (!z.w) return;
+    e.preventDefault();
+    const r = view.getBoundingClientRect();
+    z.at(z.k * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  const ptrs = new Map();
+  let drag = null, pinch = null;
+  view.addEventListener("pointerdown", e => {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    z.moved = false;
+    if (ptrs.size === 1) drag = { x: e.clientX, y: e.clientY, tx: z.tx, ty: z.ty, id: e.pointerId };
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()], r = view.getBoundingClientRect();
+      pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: z.k, cx: (a[0] + b[0]) / 2 - r.left, cy: (a[1] + b[1]) / 2 - r.top };
+      drag = null;
+    }
+  });
+  view.addEventListener("pointermove", e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pinch && ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      z.moved = true; z.at(pinch.k * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch.d, pinch.cx, pinch.cy);
+    } else if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!z.moved && Math.abs(dx) + Math.abs(dy) > 5) { z.moved = true; view.classList.add("drag"); try { view.setPointerCapture(drag.id); } catch (x) { } }
+      if (z.moved) { z.tx = drag.tx + dx; z.ty = drag.ty + dy; z.fitted = false; z.apply(); }
+    }
+  });
+  const up = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (!ptrs.size) { drag = null; view.classList.remove("drag"); } };
+  view.addEventListener("pointerup", up); view.addEventListener("pointercancel", up);
+  // a drag isn't a click: no fiducial is placed and no part picked
+  view.addEventListener("click", e => { if (z.moved) { e.stopPropagation(); e.preventDefault(); z.moved = false; } }, true);
+  new ResizeObserver(() => { if (z.fitted) z.fit(); }).observe(view);
+  return z;
+}
+const ZS = zoomer($("#viewer"), $("#stage"), $("#zoom-side"));
+// outlines and labels keep their size on screen whatever the zoom
+ZS.onchange = () => $("#stage").style.setProperty("--u", (1 / ZS.k).toFixed(4) + "px");
+const ZC = zoomer($("#ck-viewer"), $("#ck-stage"), $("#zoom-ck"));
 // ---- tabs ----------------------------------------------------------------------------------
 $("#tabs").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
@@ -156,7 +244,7 @@ $("#tabs").addEventListener("click", e => {
 function goTab(t) {
   tab = t; ui.closeup = null; stopCamera(); stopCk(); say("");
   render();
-  if (tab === "front" || tab === "back") { loadAnchors(tab); $("#look-insp").innerHTML = ""; $("#look-ref").value = ""; ui.highlight = null; }
+  if (tab === "front" || tab === "back") { ui.badPick = false; loadAnchors(tab); }
   if (tab === "history") loadHistory();
   if (tab === "check") loadCheck();
   if (tab === "models") loadModels();
@@ -180,15 +268,22 @@ function render() {
   $("#tab-history").hidden = tab !== "history";
   $("#tab-check").hidden = tab !== "check";
   $("#tab-models").hidden = tab !== "models";
-  const gname = S && S.group ? S.group.name + "  ·  " : "";
-  $("#sub").textContent = S && S.design ? "" : gname + "ODB++  ·  BOM  ·  photo map";
-  if (S && S.design) $("#sub").textContent = `${gname}${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}  ·  ${countAll()} polarised parts`;
+  $("#sub").textContent = S && S.design ? `Open: ${S.design.name}${S.project && S.project.serial ? "  ·  " + S.project.serial : ""}  ·  ${S.design.units}` : "ODB++  ·  BOM  ·  photo map";
   if (tab === "files") renderFiles();
   if (tab === "parts") renderParts();
   if (tab === "front" || tab === "back") renderSide(tab);
   if (tab === "map") renderMap();
+  // the parts' status: shown on Parts, Front, Back and Map, read again when the state changes
+  if (S && S.project && ["parts", "front", "back", "map"].includes(tab)) {
+    const before = PS.key;
+    loadStatus().then(() => { if (PS.key !== before) statusChanged(); });
+  }
 }
-const countAll = () => S.design.parts.length;
+function statusChanged() {
+  if (tab === "parts") renderParts();
+  if (tab === "front" || tab === "back") renderSide(tab);
+  if (tab === "map") { BV.st = PS.parts; bvInfo(); bvDraw(); mapLegend(); }
+}
 
 // ---- 1 files -------------------------------------------------------------------------------
 function setupDrop(id, kind) {
@@ -223,8 +318,8 @@ function renderFiles() {
     <b>Board</b><span>${esc(d.name)}</span>
     <b>Size</b><span>${w.toFixed(3)} × ${h.toFixed(3)} ${d.units}${d.units_known ? "" : " (units assumed)"}</span>
     <b>Fiducials</b><span>top ${Object.values(d.fiducials).filter(f => f.side === "top").length}, bottom ${Object.values(d.fiducials).filter(f => f.side === "bot").length}</span>
-    <b>Polarised, front</b><span>${sideLine("top")}</span>
-    <b>Polarised, back</b><span>${sideLine("bot")}</span>
+    <b>In the check, front</b><span>${sideLine("top")}</span>
+    <b>In the check, back</b><span>${sideLine("bot")}</span>
     <b>Rotation</b><span>${d.rot_sign === -1 ? "clockwise" : "anticlockwise"}${d.rot_note ? " · " + esc(d.rot_note) : ""}</span></div>`;
   for (const n of d.notes) html += `<div class="warn">${esc(n)}</div>`;
   if (d.bom_only.length) html += `<div class="warn">In the BOM but not on the board: ${esc(d.bom_only.slice(0, 40).join(", "))}${d.bom_only.length > 40 ? " …" : ""}</div>`;
@@ -295,14 +390,18 @@ $("#columns").addEventListener("change", e => {
 });
 
 // ---- 2 parts -------------------------------------------------------------------------------
-let minpxKnob = null;
 function renderParts() {
   const q = ui.lineSearch.toLowerCase();
+  // the status counts cover every part of the design; a count picks the lines with such a part
+  const refs = Object.keys(PS.parts).filter(r => !(S.design.fiducials || {})[r]);
+  statusBar($("#parts-legend"), refs.map(pstat), ui.partsStat, "parts in the design");
+  const pick = STAT_PICK[ui.partsStat] || STAT_PICK.all;
   const lines = S.lines.filter(l => (ui.lineFilter === "all" || (ui.lineFilter === "in") === !!l.chosen_kind) &&
-    (!q || (l.value + " " + l.description + " " + l.refs.join(" ")).toLowerCase().includes(q)));
+    (!q || (l.value + " " + l.description + " " + l.refs.join(" ")).toLowerCase().includes(q)) &&
+    (ui.partsStat === "all" || l.refs.some(r => PS.parts[r] && pick(pstat(r)))));
   $$("#line-filter button").forEach(b => b.classList.toggle("on", b.dataset.f === ui.lineFilter));
   const nIn = S.lines.filter(l => l.chosen_kind).length;
-  $("#line-count").textContent = `${nIn} of ${S.lines.length} BOM lines in the check`;
+  $("#line-count").textContent = `${nIn} of ${S.lines.length} BOM lines in the check${lines.length !== S.lines.length ? ` · ${lines.length} shown` : ""}`;
   // header and cells come from one list, so they can't drift apart
   $("#lines thead").innerHTML = `<tr>${LINE_COLS.map(c => `<th title="${esc(c.tip || "")}">${c.head}</th>`).join("")}</tr>`;
   $("#lines tbody").innerHTML = lines.map(l => {
@@ -311,7 +410,7 @@ function renderParts() {
       + (open ? `<tr class="sub"><td></td><td colspan="${LINE_COLS.length - 1}">${lineRefs(l)}</td></tr>` : "");
   }).join("") || `<tr><td colspan="${LINE_COLS.length}" class="no">No lines match.</td></tr>`;
   const mk = S.profile.markings;
-  $("#markings").innerHTML = ["tantalum", "electrolytic", "diode", "led"].map(k => `<div class="row"><span class="lab" style="width:100px">${KIND_NAMES[k].toUpperCase()}</span>
+  $("#markings").innerHTML = ["tantalum", "electrolytic", "diode", "led"].map(k => `<div class="row"><span class="lab" style="width:110px">${KIND_NAMES[k].toUpperCase()}</span>
     <div class="seg" data-mark="${k}"><button data-end="pin1" class="${mk[k] === "pin1" ? "on" : ""}">AT PIN 1</button><button data-end="other" class="${mk[k] === "other" ? "on" : ""}">AT PIN 2</button></div></div>`).join("");
   const rs = S.profile.rot_sign;
   $$("#rot-sign button").forEach(b => b.classList.toggle("on", String(rs ?? "auto") === b.dataset.v));
@@ -320,69 +419,81 @@ function renderParts() {
     ? (votes["1"] || votes["-1"] ? `Auto picked ${S.design.rot_sign === -1 ? "clockwise" : "anticlockwise"} from the pin 1 positions (${votes["-1"]} part(s) say clockwise, ${votes["1"]} anticlockwise).`
       : "Auto: the design's pins can't tell, so the photo step shows a check if any part would look different.")
     : "Set by hand.";
-  if (!minpxKnob) minpxKnob = knob($("#knob-minpx"), S.profile.min_px, (v, end) => { if (end) act(() => post("api/option", { key: "min_px", value: v })); });
-  else minpxKnob.set(S.profile.min_px);
+  $("#rot-note-short").textContent = rs == null ? `Auto: ${S.design.rot_sign === -1 ? "clockwise" : "anticlockwise"}` : `Set by hand: ${rs === -1 ? "clockwise" : "anticlockwise"}`;
+  if (document.activeElement !== $("#minpx")) $("#minpx").value = S.profile.min_px;
+  $("#minpx-v").textContent = `${$("#minpx").value} px`;
   $("#use-tant").checked = !!S.profile.use_tantalums;
   // parts added by hand
   if (S.project) loadPartList(S.project.uid);
-  if (!$("#xp-kind").options.length) $("#xp-kind").innerHTML = Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("");
-  $("#xp-list").innerHTML = (S.extras || []).length ? `<div class="dim">ADDED BY HAND</div>` : "";
-  $("#xp-list").innerHTML += (S.extras || []).map(x => `<div><span class="grow"><b>${esc(x.ref)}</b> ${esc(KIND_NAMES[x.kind] || x.kind)} · ${x.side}
-      <span class="dim">${esc(x.value || x.package)}${x.in_bom ? "" : " · not in the BOM"}${x.missing ? " · not in this design!" : ""}</span><br>
-      <span class="dim">${x.good} good, ${x.bad} bad${x.wait && !(x.good + x.bad) ? " · waiting for a new photo" : ""}</span></span>
-    <button data-xtrain="${esc(x.ref)}" data-side="${x.side}">TRAIN</button>
-    <button data-xwait="${esc(x.ref)}" class="${x.wait ? "on" : ""}" title="Ask about it on the next check of its side until it's answered">WAIT FOR PHOTO</button>
-    <button data-xdel="${esc(x.ref)}">REMOVE</button></div>`).join("");
+  if (!$("#xp-kind").options.length) $("#xp-kind").innerHTML = kindOptions();
+  $("#xp-list").innerHTML = (S.extras || []).length ? `<div class="lab">ADDED ONE BY ONE (${S.extras.length})</div>` : "";
+  $("#xp-list").innerHTML += (S.extras || []).map(x => `<div><span class="grow"><b>${esc(x.ref)}</b> ${chip(pstat(x.ref))} ${esc(KIND_NAMES[x.kind] || x.kind)} · ${x.side}
+      <span class="dim">${esc(x.value || x.package)}${x.in_bom ? "" : " · not in the BOM"}${x.missing ? " · not in this design!" : ""} · ${x.good} good, ${x.bad} bad${x.wait && !(x.good + x.bad) ? " · waiting for a new photo" : ""}</span></span>
+    <button class="small" data-xtrain="${esc(x.ref)}" data-side="${x.side}">TRAIN</button>
+    <button class="small ${x.wait ? "on" : ""}" data-xwait="${esc(x.ref)}" title="Ask about it on the next check of its side until it's answered">WAIT FOR PHOTO</button>
+    <button class="small" data-xdel="${esc(x.ref)}">REMOVE</button></div>`).join("");
 }
+const kindOptions = (sel = "look") => Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(t)}</option>`).join("");
+$("#parts-legend").addEventListener("click", e => { const b = e.target.closest("[data-stat]"); if (b) { ui.partsStat = ui.partsStat === b.dataset.stat ? "all" : b.dataset.stat; renderParts(); } });
+$("#minpx").addEventListener("input", e => { $("#minpx-v").textContent = `${e.target.value} px`; });
+$("#minpx").addEventListener("change", e => act(() => post("api/option", { key: "min_px", value: +e.target.value })));
 // whether a BOM line's parts are checked on the board open here, by side
 const SIDE_SHORT = { front: "FRONT", back: "BACK" };
 const LINE_COLS = [
-  { head: "Add", tip: "Tick to add the line's parts to the check", cls: "tick",
+  { head: "In the check", tip: "Tick to put the line's parts in the check", cls: "tick",
     cell: l => `<label class="tickbox ${l.chosen_kind ? "on" : ""}"><input type="checkbox" data-tick ${l.chosen_kind ? "checked" : ""} ${l.on_board.length ? "" : "disabled"}
       title="${l.chosen_kind ? "In the check: untick to take its parts out" : "Tick to check its parts"}">${l.chosen_kind ? "IN" : "ADD"}</label>` },
-  { head: "Value", cell: l => `${l.dnp ? `<span class="tag">DNP</span> ` : ""}${esc(l.value)}` },
+  { head: "Value", cell: l => `${l.dnp ? `<span class="tag">DNP</span> ` : ""}<b>${esc(l.value)}</b>` },
   { head: "Description", cell: l => `${esc(l.description)}${l.why && !l.chosen_kind ? ` <span class="dim">(suggested: ${esc(l.why)})</span>` : ""}` },
   { head: "Parts", cls: "lparts", attr: l => `data-expand title="${esc(l.refs.join(", "))}"`,
     cell: (l, open) => `${open ? "▾" : "▸"} ${l.on_board.length}${l.on_board.length !== l.refs.length ? ` of ${l.refs.length}` : ""}` },
   { head: "Kind", cell: l => `<select data-kind>${["", ...Object.keys(KIND_NAMES)].map(k => `<option value="${k}" ${(l.chosen_kind || "") === k ? "selected" : ""}>${k ? KIND_NAMES[k] : "Not checked"}</option>`).join("")}</select>` },
   { head: "Hidden because", tip: "Parts that can't be seen (under a heatsink or shield)",
     cell: l => `<input data-hidden value="${esc(l.hidden || "")}" placeholder="${l.chosen_kind ? "visible" : "why not (optional)"}">` },
-  { head: "Checked on this board", cls: "lstat", attr: () => `data-expand title="Show each part"`, cell: (l, open) => `${open ? "▾" : "▸"} ${lineSummary(l)}` },
+  { head: "On this board", cls: "lstat", attr: () => `data-expand title="Show each part"`, cell: (l, open) => `${open ? "▾" : "▸"} ${lineSummary(l)}` },
 ];
+// a part of a BOM line: the line's own status (fresh with the state), the answers from the viewer's status
+function lineStat(r) {
+  const o = PS.parts[r.ref];
+  return o && (["good", "bad", "ns"].includes(o.st) || (r.status === "off" && o.st !== "off")) ? ustat(o) : ustat({ st: r.status });
+}
+// a line's parts by side, counted by status, as chips
 function lineSummary(l) {
-  const st = l.status || [], inCheck = st.filter(r => r.status !== "off");
+  const st = l.status || [];
   const g = st.reduce((a, r) => a + r.good, 0), b = st.reduce((a, r) => a + r.bad, 0);
   const learned = g + b ? ` <span class="dim">· learned ${g} good, ${b} bad</span>` : "";
-  if (!inCheck.length) return `<span class="dim">${!l.on_board.length ? "not on the board" : l.dnp ? "DNP, not ticked" : "not ticked"}${l.hidden && !l.chosen_kind ? ": " + esc(l.hidden) : ""}</span>${learned}`;
-  const sides = ["front", "back"].filter(s => inCheck.some(r => r.side === s)).map(s => {
-    const rs = inCheck.filter(r => r.side === s), c = rs.filter(r => r.status === "checked").length;
-    if (rs.every(r => r.status === "nophoto")) return `${SIDE_SHORT[s]} <span class="dim">no photo</span>`;
-    return `${SIDE_SHORT[s]} <span class="${c === rs.length ? "st-ok" : "st-check"}">${c === rs.length ? "✓" : "✗"} ${c}/${rs.length}</span>`;
+  if (!st.some(r => lineStat(r) !== "off"))
+    return `${chip("off")} <span class="dim">${!l.on_board.length ? "not on the board" : l.dnp ? "DNP, not ticked" : "not ticked"}${l.hidden && !l.chosen_kind ? ": " + esc(l.hidden) : ""}</span>${learned}`;
+  const sides = ["front", "back"].filter(s => st.some(r => r.side === s)).map(s => {
+    const rs = st.filter(r => r.side === s);
+    if (rs.every(r => r.status === "nophoto")) return `<span class="lab">${SIDE_SHORT[s]}</span> ${chip("in", ` ${rs.length}`)} <span class="dim">no photo yet</span>`;
+    const n = {};
+    for (const r of rs) { const k = lineStat(r); n[k] = (n[k] || 0) + 1; }
+    return `<span class="lab">${SIDE_SHORT[s]}</span> ${Object.keys(STATUS).filter(k => n[k]).map(k => chip(k, ` ${n[k]}`)).join(" ")}`;
   });
-  const why = {};
-  for (const r of inCheck.filter(r => r.status === "skipped")) { const k = r.why.includes("closeup planned") ? "too small, closeup planned" : r.why.replace(/[:(].*/, "").trim(); why[k] = (why[k] || 0) + 1; }
-  const skipped = Object.entries(why).map(([k, n]) => `${n} ${esc(k)}`).join(", ");
-  return sides.join(" · ") + (skipped ? ` <span class="dim">· skipped: ${skipped}</span>` : "") + learned;
+  return `<span class="chips">${sides.join(" <span class='dim'>·</span> ")}</span>${learned}`;
 }
 // each part of a line, with a small picture of it on this board's photo of its side when there is one
 // (lazy: only open lines, and the browser fetches only what scrolls into view; the Pi keeps the crops)
 const thumbSrc = (side, ref) => `api/part/thumb?src=${encodeURIComponent(sideSrc(side))}&ref=${encodeURIComponent(ref)}&size=120&v=${S.sides[side].stamp || ""}`;
 function lineRefs(l) {
-  const mark = { checked: "✓", skipped: "✗", nophoto: "–", off: "·" };
   const st = l.status || [];
   if (!st.length) return `<div class="dim">No parts of this line are on the board.</div>`;
   const noPhoto = ["front", "back"].filter(s => st.some(r => r.side === s) && !(S.sides[s] && S.sides[s].aligned));
   return (noPhoto.length ? `<div class="dim">${noPhoto.map(s => `${SIDE_SHORT[s]}: ${S.sides[s] && S.sides[s].photo ? "photo not lined up yet" : "no photo yet"}`).join(" · ")}</div>` : "")
     + `<div class="refs">${st.map(r => {
     const can = r.side && S.sides[r.side] && S.sides[r.side].aligned;
-    const info = `${mark[r.status] || ""} <span class="dim">${r.side ? SIDE_SHORT[r.side].toLowerCase() : ""}${r.why ? " · " + esc(r.why) : r.status === "checked" ? " · checked" : ""}${r.extra ? " · added by hand" : ""}${r.good + r.bad ? ` · ${r.good} good, ${r.bad} bad` : ""}</span>`;
-    return can
-      ? `<a href="#" class="ref thumb st-${r.status}" data-look="${esc(r.ref)}" data-side="${r.side}" title="Look at ${esc(r.ref)} on the ${r.side}">
+    const k = lineStat(r);
+    const info = `${chip(k)}<span class="why">${r.side ? SIDE_SHORT[r.side].toLowerCase() : ""}${r.why ? " · " + esc(r.why) : ""}${r.extra ? " · added one by one" : ""}${r.good + r.bad ? ` · ${r.good} good, ${r.bad} bad` : ""}</span>`;
+    const add = k === "off" && r.side ? `<button class="small" data-addref="${esc(r.ref)}" title="Put just this part in the check (Look only); tick the line for all of them">+ ADD TO THE CHECK</button>` : "";
+    return (can
+      ? `<span class="ref thumb"><a href="#" class="ref thumb" data-look="${esc(r.ref)}" data-side="${r.side}" title="Select ${esc(r.ref)} on the ${r.side}">
           <img loading="lazy" decoding="async" alt="" src="${thumbSrc(r.side, r.ref)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'nopic',textContent:'no picture'}))">
-          <b>${esc(r.ref)}</b><span>${info}</span></a>`
-      : `<span class="ref thumb st-${r.status}"><span class="nopic">${r.side ? "no photo yet" : ""}</span><b>${esc(r.ref)}</b><span>${info}</span></span>`;
+          <b>${esc(r.ref)}</b></a>${info}${add}</span>`
+      : `<span class="ref thumb"><span class="nopic">${r.side ? "no photo yet" : ""}</span><b>${esc(r.ref)}</b>${info}${add}</span>`);
   }).join("")}</div>`;
 }
+
 const XP = { ref: null, side: null };
 async function openTrain(ref, side) {
   XP.ref = ref; XP.side = side;
@@ -439,6 +550,8 @@ $("#lines").addEventListener("change", e => {
   act(() => post("api/lines", { [key]: ch }), done || undefined);
 });
 $("#lines").addEventListener("click", e => {
+  const ad = e.target.closest("[data-addref]");
+  if (ad) return act(() => post("api/part/extra", { ref: ad.dataset.addref, kind: "look" }), `${ad.dataset.addref} put in the check (Look only).`).then(() => { PL.uid = null; });
   const a = e.target.closest("[data-look]");
   if (a) { e.preventDefault(); e.stopPropagation(); const side = a.dataset.side, ref = a.dataset.look; goTab(side); return lookAt(side, ref); }
   const x = e.target.closest("[data-expand]"); if (!x) return;
@@ -452,7 +565,6 @@ $("#rot-sign").addEventListener("click", e => { const b = e.target.closest("butt
 $("#use-tant").addEventListener("change", e => act(() => post("api/option", { key: "use_tantalums", value: e.target.checked })));
 
 // ---- 3/4 a side: photo, fiducials, closeups ------------------------------------------------
-let ghostKnob = null, zoomKnob = null;
 async function loadAnchors(side) {
   try { ui.anchors[side] = await api(`api/side/${side}/anchors`); } catch (e) { say(e.message, true); }
   const st = S.sides[side];
@@ -460,6 +572,7 @@ async function loadAnchors(side) {
   ui.cur[side] = nextPrompt(side);
   if (st && st.aligned) loadRotation(side);
   renderSide(side);
+  if (ui.look[side]) selectPart(side, ui.look[side]);
 }
 function prompts(side) {
   if (ui.closeup) {
@@ -475,12 +588,30 @@ function nextPrompt(side) {
   const i = p.findIndex(q => !pts[q.ref]);
   return i < 0 ? p.length : i;
 }
+// every part on the side (in the check or not), and the ones the list shows: by status and search
+const sideRows = side => { const st = S.sides[side]; return st && st.aligned ? st.placed.concat(st.others || []) : []; };
+function shownRows(side) {
+  const q = $("#side-q").value.trim().toLowerCase(), pick = STAT_PICK[ui.sideStat] || STAT_PICK.all;
+  return sideRows(side).filter(r => pick(pstat(r.ref)) && (!q || r.ref.toLowerCase().startsWith(q) || (r.value || "").toLowerCase().includes(q)))
+    .sort((a, b) => natural(a.ref, b.ref));
+}
+const orientName = side => { const o = S.profile.orient[side], x = ORIENTS[side].find(x => x.v[0] === o[0] && x.v[1] === o[1]); return x ? x.t.toLowerCase() : ""; };
 
 function renderSide(side) {
   const st = S.sides[side] || { photo: false };
   const cu = ui.closeup, cst = cu ? (st.closeups || []).find(c => c.index === cu.index) : null;
   $("#side-title").textContent = (side === "front" ? "FRONT" : "BACK") + (cu ? `  ·  CLOSEUP ${cu.index + 1}` : "");
-  // orientation
+  // setting up the photo: open until it's lined up, then one line with CHANGE
+  const done = !!st.aligned && !cu, setup = $("#setup");
+  if (!done) ui.setupOpen = false;
+  setup.open = !done || ui.setupOpen;
+  setup.classList.toggle("todo", !done);
+  ui.pick = done && !ui.setupOpen;
+  const nPts = Object.keys(st.points || {}).length;
+  $("#setup-sum").textContent = cu ? "Line up the closeup" : done
+    ? `Lined up on ${plural(nPts, prompts(side)[0] && prompts(side)[0].what === "corner" ? "corner" : "fiducial")} · ${orientName(side)} · ${S.design.rot_sign === -1 ? "clockwise" : "anticlockwise"}`
+    : !st.photo ? "Set up this photo: take or choose one" : "Set up this photo: click the points, then LINE UP";
+  $("#setup-change").hidden = !done;
   const o = S.profile.orient[side];
   $("#orient").innerHTML = ORIENTS[side].map(x => `<button data-o="${x.v.join(",")}" title="${esc(x.d)}" class="${x.v[0] === o[0] && x.v[1] === o[1] ? "on" : ""}">${x.t}</button>`).join("");
   // viewer
@@ -495,10 +626,16 @@ function renderSide(side) {
   if (hasPhoto && !live) {
     const aligned = cu ? cst.aligned : st.aligned;
     const base = cu ? `api/side/${side}/closeup/${cu.index}` : `api/side/${side}`;
-    const src = aligned ? `${base}/map.jpg?w=1800&marks=${ui.marks ? 1 : 0}${ui.highlight && !cu ? "&highlight=" + encodeURIComponent(ui.highlight) : ""}` : `${base}/photo.jpg`;
-    const key = src + "|" + (S._v || "") + "|" + (S._r || "");
+    // the outlines are drawn here (by status); the server adds pin 1 dots and polarity marks
+    const src = aligned ? (cu ? `${base}/map.jpg?w=1800` : `${base}/map.jpg?w=1800&outlines=0&marks=${ui.marks ? 1 : 0}`) : `${base}/photo.jpg`;
+    const key = src + "|" + (S._v || "") + "|" + (cu ? S._r : `${st.stamp}|${(st.placed || []).length}`);
     if (img.dataset.key !== key) { img.dataset.key = key; img.src = src + (src.includes("?") ? "&" : "?") + "t=" + t; }
   }
+  // the stage is the photo (or the camera's picture) at its own size
+  if (live) {
+    const v = $("#video"), l = $("#live");
+    ZS.size(ui.stream.canon ? l.naturalWidth : v.videoWidth, ui.stream.canon ? l.naturalHeight : v.videoHeight);
+  } else if (hasPhoto) ZS.size(cu ? cst.width : st.width, cu ? cst.height : st.height);
   // ghost over the live camera: the last photo of this side, or the design drawn as it should lie
   ghost.hidden = !(live && ui.ghostOn);
   if (live && ui.ghostOn) {
@@ -507,15 +644,12 @@ function renderSide(side) {
     ghost.hidden = !gsrc;
     ghost.style.opacity = ui.ghostOp / 100;
   }
-  $(".viewer").style.setProperty("--zoom", ui.zoom);
-  $("#viewer").classList.toggle("clicking", hasPhoto && !live);
+  $("#viewer").classList.toggle("clicking", hasPhoto && !live && !ui.pick);
   $("#cam-start").textContent = live ? "STOP CAMERA" : "START CAMERA";
   $("#cam-take").hidden = !live;
   $("#cam-list").hidden = !live || $("#cam-list").options.length < 2;
   $("#ghost-on").checked = ui.ghostOn;
-  if (!ghostKnob) ghostKnob = knob($("#knob-ghost"), ui.ghostOp, v => { ui.ghostOp = v; $("#ghost").style.opacity = v / 100; keepUi(); });
-  if (!zoomKnob) zoomKnob = knob($("#knob-zoom"), ui.zoom, v => { ui.zoom = v; applyZoom(); keepUi(); });
-  applyZoom();
+  $("#ghost-op").value = ui.ghostOp; $("#ghost-op").disabled = !ui.ghostOn;
   // alignment
   $("#align-box").hidden = !hasPhoto;
   const p = prompts(side), pts = curPts(side), cur = cu ? cu.cur : ui.cur[side];
@@ -527,11 +661,9 @@ function renderSide(side) {
   $("#auto-find").hidden = !!cu;
   $("#do-align").disabled = Object.keys(pts).length < 2;
   let res = "";
-  const ast = cu ? cst : st;
   if (!cu && st.aligned) {
-    res += `<div class="dim">Lined up: ${esc(st.how)}. ${st.errors.length > 3 ? "Largest point error " + Math.max(...st.errors).toFixed(1) + " px." : ""}</div>`;
+    res += `<div class="dim">Lined up${st.how ? ": " + esc(st.how) : ""}.${st.errors.length > 3 ? " Largest point error " + Math.max(...st.errors).toFixed(1) + " px." : ""}</div>`;
     for (const w of st.warnings) res += `<div class="warn">${esc(w)}</div>`;
-    res += `<div class="kv" style="margin-top:8px"><b>Parts on this side</b><span>${st.summary.parts}</span>${st.summary.in_check !== undefined ? `<b>In the check</b><span>${st.summary.in_check}</span>` : ""}<b>Checkable</b><span>${st.summary.checkable}${st.summary.via_closeup ? ` (${st.summary.via_closeup} on closeups)` : ""}</span></div>`;
   }
   if (cu && cst && cst.aligned) res += `<div class="dim">Closeup lined up.</div>`;
   if (cu) res += `<div class="row"><button id="back-full">BACK TO THE FULL PHOTO</button></div>`;
@@ -548,61 +680,226 @@ function renderSide(side) {
   const tiles = cu ? [] : (st.tiles || []);
   $("#closeup-box").hidden = cu || !st.aligned || !tiles.length;
   $("#tiles").innerHTML = tiles.map(t => `<div><span class="grow"><b>Area ${t.index + 1}</b> <span class="dim">${esc(t.refs.join(", "))}</span></span>
-    <span class="${t.aligned ? "ok" : "dim"}">${t.aligned ? "✓" : t.taken ? "line up" : ""}</span><button data-tile="${t.index}">${t.taken ? "OPEN" : "TAKE"}</button></div>`).join("");
-  // looking at one part
-  $("#look-box").hidden = cu || !st.aligned;
-  $("#look-pick").checked = ui.pick;
+    <span class="${t.aligned ? "ok" : "dim"}">${t.aligned ? "✓" : t.taken ? "line up" : ""}</span><button class="small" data-tile="${t.index}">${t.taken ? "OPEN" : "TAKE"}</button></div>`).join("");
   if (st.aligned && !cu && S.project) loadPartList(S.project.uid);
-  // parts
-  $("#parts-box").hidden = cu || !st.aligned;
-  if (st.aligned && !cu) {
-    $$("#parts-filter button").forEach(b => b.classList.toggle("on", b.dataset.f === ui.partsFilter));
+  // the parts: legend with counts, the list, the outlines on the photo, the selected part
+  const showParts = !cu && !!st.aligned;
+  $("#parts-box").hidden = !showParts;
+  $("#side-legend").hidden = !showParts;
+  if (showParts) {
+    statusBar($("#side-legend"), sideRows(side).map(r => pstat(r.ref)), ui.sideStat, `parts on the ${side}`);
+    $("#side-legend").insertAdjacentHTML("beforeend", `<span class="grow"></span><span class="hintkeys">Wheel: zoom · drag: move · click a part · ↑↓: next part</span>`);
     $("#marks-on").checked = ui.marks;
-    const rows = st.placed.concat(st.others || []).filter(r => ui.partsFilter === "all" || (ui.partsFilter === "yes") === r.checkable);
-    $("#side-parts tbody").innerHTML = rows.map(r => `<tr class="click ${r.ref === ui.highlight ? "sel" : ""}" data-ref="${esc(r.ref)}">
-      <td>${esc(r.ref)}</td><td>${r.in_check === false ? `<span class="dim">not checked</span>` : KIND_NAMES[r.kind] || r.kind}</td><td>${esc(r.value)}</td><td>${r.in_check === false ? "—" : esc(r.pin1_dir || "?") + (r.pin1_how !== "named" ? "*" : "")}</td>
-      <td>${r.px.toFixed(0)} px</td><td class="${r.checkable ? "" : "no"}" title="${esc(r.reason || r.note || "")}">${r.checkable ? (r.via !== undefined ? "closeup " + (r.via + 1) : "yes") : esc(r.reason)}</td></tr>`).join("");
+    const sel = ui.look[side];
+    $("#side-parts").innerHTML = shownRows(side).map(r => {
+      const k = pstat(r.ref);
+      return `<div data-ref="${esc(r.ref)}" class="${r.ref === sel ? "sel" : ""}" title="${esc((PS.parts[r.ref] || {}).why || r.reason || "")}"><span class="r">${esc(r.ref)}</span>
+        <span class="v grow ell">${esc(r.value || r.package || "")}${r.kind ? " · " + esc(KIND_NAMES[r.kind] || r.kind) : ""}</span>${chip(k)}${k === "off" ? `<button class="small" data-add="${esc(r.ref)}" title="Put it in the check (Look only)">+ ADD</button>` : ""}</div>`;
+    }).join("") || `<div class="dim">No parts match.</div>`;
   }
+  renderSel(side);
+  drawParts(side);
   drawMarks(side);
 }
-function applyZoom() {
-  const z = ui.zoom / 100;
-  for (const el of [$("#photo"), $("#video"), $("#live")]) el.style.width = (100 * z) + "%";
-  $("#ghost").style.width = (100 * z) + "%";
-  $("#marks").style.width = (100 * z) + "%";
-}
 
+// the outlines of every part on the side, coloured by status; in pick mode a click selects one
+function drawParts(side) {
+  const svg = $("#parts-svg"), st = S.sides[side];
+  if (!st || !st.aligned || ui.closeup || ui.stream) { svg.innerHTML = ""; return; }
+  svg.setAttribute("viewBox", `0 0 ${st.width} ${st.height}`);
+  svg.classList.toggle("pick", ui.pick);
+  const shown = new Set(shownRows(side).map(r => r.ref)), filtered = ui.sideStat !== "all" || $("#side-q").value.trim();
+  const area = r => { const p = r.poly; let a = 0; for (let i = 0; i < p.length; i++) { const [x1, y1] = p[i], [x2, y2] = p[(i + 1) % p.length]; a += x1 * y2 - x2 * y1; } return Math.abs(a / 2); };
+  const rows = sideRows(side).filter(r => r.poly).map(r => [r, area(r)]).sort((a, b) => b[1] - a[1]);   // small parts on top
+  const sel = ui.look[side];
+  let polys = "", labels = "";
+  for (const [r] of rows) {
+    const k = pstat(r.ref), dim = filtered && !shown.has(r.ref) && r.ref !== sel ? " dimmed" : "";
+    polys += `<polygon data-ref="${esc(r.ref)}" class="st-${k}${dim}${r.ref === sel ? " sel" : ""}" style="stroke:${STATUS_COL[k]}" points="${r.poly.map(q => q.join(",")).join(" ")}"><title>${esc(r.ref)} · ${STATUS[k].t}${(PS.parts[r.ref] || {}).why ? " · " + esc(PS.parts[r.ref].why) : ""}</title></polygon>`;
+    if (k !== "off" || r.ref === sel) {
+      const x = Math.min(...r.poly.map(q => q[0])), y = Math.min(...r.poly.map(q => q[1]));
+      labels += `<text class="${dim}" x="${x}" y="${y}" dy="-0.35em" style="fill:${r.ref === sel ? "var(--st-sel)" : STATUS_COL[k]}">${esc(r.ref)}</text>`;
+    }
+  }
+  svg.innerHTML = polys + labels;
+}
+// the selection, without drawing everything again: photo outline, list row, and both scrolled to it
+function markSel(side, scroll = true) {
+  const ref = ui.look[side];
+  $$("#side-parts > div[data-ref]").forEach(d => d.classList.toggle("sel", d.dataset.ref === ref));
+  drawParts(side);
+  if (!ref || !scroll) return;
+  const row = $$("#side-parts > div[data-ref]").find(d => d.dataset.ref === ref);
+  if (row) row.scrollIntoView({ block: "nearest" });
+  const r = sideRows(side).find(x => x.ref === ref);
+  if (r && r.poly) ZS.show(r.poly.reduce((a, q) => a + q[0], 0) / r.poly.length, r.poly.reduce((a, q) => a + q[1], 0) / r.poly.length);
+}
 // the clicked points drawn over the photo, in photo pixels
 function drawMarks(side) {
   const svg = $("#marks"), img = $("#photo");
   const st = S.sides[side];
   const cu = ui.closeup, cst = cu ? st.closeups.find(c => c.index === cu.index) : null;
   const W = cu ? cst && cst.width : st.width, H = cu ? cst && cst.height : st.height;
-  if (!W || img.hidden) { svg.innerHTML = ""; return; }
+  if (!W || img.hidden || ui.pick) { svg.innerHTML = ""; return; }
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.style.height = img.clientHeight + "px";
   const r = W / 120, pts = curPts(side);
   svg.innerHTML = Object.entries(pts).map(([ref, [x, y]]) => `<circle class="pt" cx="${x}" cy="${y}" r="${r}" stroke-width="${W / 600}"/>
     <line x1="${x - r * 1.6}" y1="${y}" x2="${x + r * 1.6}" y2="${y}" stroke="currentColor" class="pt" stroke-width="${W / 900}"/>
     <line x1="${x}" y1="${y - r * 1.6}" x2="${x}" y2="${y + r * 1.6}" class="pt" stroke-width="${W / 900}"/>
     <text x="${x + r * 1.4}" y="${y - r * 1.2}" style="font-size:${W / 70}px">${esc(ref)}</text>`).join("");
 }
-$("#photo").addEventListener("load", () => drawMarks(tab));
+$("#photo").addEventListener("load", () => (tab === "front" || tab === "back") && drawMarks(tab));
+$("#video").addEventListener("loadedmetadata", () => (tab === "front" || tab === "back") && renderSide(tab));
+$("#live").addEventListener("load", () => { if ((tab === "front" || tab === "back") && !ZS.w) renderSide(tab); });
 
 const sideSrc = side => `project/${S.project.uid}/${side}`;
-function lookAt(side, ref) {
-  ui.look[side] = ref; ui.highlight = ref;
-  $("#look-ref").value = ref || "";
-  renderSide(side);
-  showPart($("#look-insp"), sideSrc(side), ref, async () => { const st = await api("api/state"); S = st; S._r = Date.now(); renderSide(side); });
+// ---- the selected part: what it is, what the check and the models make of it, and the answers
+const SEL = { side: null, ref: null, d: null };
+async function selectPart(side, ref, scroll = true) {
+  ui.look[side] = ref || null; ui.highlight = ref || null; ui.badPick = false;
+  SEL.side = side; SEL.ref = ref || null; SEL.d = null;
+  if (tab === side) { renderSel(side); markSel(side, scroll); }
+  if (!ref || !S.sides[side] || !S.sides[side].aligned) return;
+  let d;
+  try { d = await api(`api/part/info?src=${encodeURIComponent(sideSrc(side))}&ref=${encodeURIComponent(ref)}`); }
+  catch (e) { d = { ref, error: e.message }; }
+  if (SEL.ref === ref && SEL.side === side) { SEL.d = d; if (tab === side) renderSel(side); }
 }
+const lookAt = (side, ref) => selectPart(side, ref);
+// what was answered on this board's photo: GOOD, BAD, MISSING or NS
+function selAnswer(d, k) {
+  if (d && !d.error) return d.ns ? "ns" : d.taught ? (d.taught.label === "good" ? "good" : d.taught.reason === "missing" ? "missing" : "bad") : null;
+  return ["good", "bad", "missing", "ns"].includes(k) ? k : null;
+}
+function renderSel(side) {
+  const el = $("#sel-part"), ref = ui.look[side], st = S.sides[side];
+  el.hidden = !ref || !st || !st.aligned || !!ui.closeup;
+  if (el.hidden) { el.innerHTML = ""; $("#side-col").style.setProperty("--selh", "0px"); return; }
+  const row = sideRows(side).find(r => r.ref === ref) || {}, o = PS.parts[ref] || {}, k = pstat(ref);
+  const d = SEL.d && SEL.d.ref === ref && SEL.side === side ? SEL.d : null, ok = d && !d.error;
+  const src = sideSrc(side), v = st.stamp || "", ans = selAnswer(d, k), inCheck = k !== "off";
+  const rows = shownRows(side), i = rows.findIndex(r => r.ref === ref);
+  const kind = (ok && d.kind) || row.kind;
+  const what = [ok ? d.value : row.value, kind ? KIND_NAMES[kind] || kind : "not in the check", ok ? d.package : row.package, ok && d.description].filter(Boolean).map(esc).join(" · ");
+  const reasons = Object.entries(Object.keys(PL.reasons).length ? PL.reasons : (S.reasons || {})).filter(([r]) => r !== "missing");
+  el.innerHTML = `<div class="head"><span class="ref">${esc(ref)}</span>${chip(k, "", "big solid")}<span class="grow"></span>
+      <button class="small" data-a="prev" title="The part before in the list (key ↑)">‹</button><span class="dim" style="margin:0">${i >= 0 ? `${i + 1} of ${rows.length}` : ""}</span>
+      <button class="small" data-a="next" title="The next part in the list (key ↓)">›</button><button class="small" data-a="close" title="Clear the selection (Esc)">✕</button></div>
+    <div class="what">${what}${ok && !d.in_bom ? " · not in the BOM" : ""}</div>
+    <div class="pics"><figure><img src="${partCrop(src, ref, "board", v)}" alt="">this board</figure>
+      ${ok && d.reference && d.verdict !== "reference" ? `<figure><img src="${partCrop(src, ref, "reference", v)}" alt="">reference</figure>` : ""}
+      <div class="learned dim">Learned so far:<br><b>${ok ? d.good : o.good || 0}</b> good<br><b>${ok ? d.bad : o.bad || 0}</b> bad${ok && d.pending ? "<br>waiting for a new photo" : ""}</div></div>
+    <div class="opinions">
+      <div class="op" title="${esc(ok ? d.why || "" : "")}"><b>THE CHECK</b> ${!d ? "Looking..." : d.error ? `<span class="st-bad">${esc(d.error)}</span>` : `<span class="verdict v-${d.verdict}">${VERDICT_TEXT[d.verdict] || d.verdict}</span> ${esc(d.why || o.why || "")}`}</div>
+      ${ok && d.model_text ? `<div class="op" title="${esc(d.model_text)}"><b>THE MODELS</b> ${esc(d.model_text)}</div>` : ""}
+    </div>
+    <div class="answers">
+      <button data-a="good" class="a-good ${ans === "good" ? "on" : ""}" title="It's right (key G)${inCheck ? "" : "; puts it in the check"}">GOOD</button>
+      <button data-a="bad" class="a-bad ${ans === "bad" ? "on" : ""}" title="It's wrong: pick why (key B)">BAD${ans === "bad" && ok && d.taught && d.taught.reason ? ": " + esc((PL.reasons[d.taught.reason] || d.taught.reason).toUpperCase()) : ""}</button>
+      <button data-a="missing" class="a-missing ${ans === "missing" ? "on" : ""}" title="It should be there but isn't: a fault (key M)">MISSING</button>
+      <button data-a="ns" class="a-ns ${ans === "ns" ? "on" : ""}" title="Not stuffed: left off this board on purpose, not a fault (key N)">NS</button>
+      ${ans ? `<button data-a="undo" title="Take the answer back">UNDO</button>` : ""}
+      <details class="more"><summary>MORE</summary><div class="menu">
+        <button data-a="nsall" class="${ok && d.ns === "all" ? "on" : ""}">${ok && d.ns === "all" ? "NS ON EVERY BOARD ✓ (UNDO)" : "NS ON EVERY BOARD OF THIS DESIGN"}</button>
+        ${ok && (d.extra || !d.in_check) ? `<button data-a="wait" class="${d.wait ? "on" : ""}">${d.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO"}</button>` : ""}
+        <button data-a="map">SHOW ON THE MAP</button></div></details>
+    </div>
+    ${ui.badPick ? `<div class="answers"><span class="lab">WHY BAD?</span>${reasons.map(([r, t]) => `<button class="small a-bad" data-reason="${esc(r)}">${esc(t.toUpperCase())}</button>`).join("")}
+      <input class="note" id="sel-note" placeholder="Note (optional)" value="${esc(ok && d.note || "")}"></div>` : ""}
+    <div class="addrow">${inCheck
+      ? `<span class="dim grow">${ok && d.extra ? "Added one by one" : "In the check"}${kind ? " as " + esc(KIND_NAMES[kind] || kind) : ""}</span><button class="small" data-a="remove">TAKE OUT</button>
+        <button class="small accent" data-a="todo" title="The next part in the check with no answer (key Space)">NEXT NOT ANSWERED ›</button>`
+      : `<span class="dim grow">Not in the check${o.why && o.why !== "not in the check" ? ": " + esc(o.why) : ""}</span><select id="sel-kind" title="Check it as">${kindOptions()}</select><button class="accent" data-a="add" title="Key A">+ ADD TO THE CHECK</button>`}</div>
+    <div class="dim keys">Keys: G good · B bad · M missing · N NS · A add · ↑↓ step · Space next not answered · Esc</div>`;
+  $("#side-col").style.setProperty("--selh", el.offsetHeight + 8 + "px");
+}
+// step through the list as shown: dir +1/-1, or the next part in the check not answered yet
+function stepPart(side, dir, todo = false) {
+  const rows = shownRows(side); if (!rows.length) return;
+  let i = rows.findIndex(r => r.ref === ui.look[side]);
+  if (i < 0) i = dir < 0 ? 0 : -1;
+  for (let n = 0; n < rows.length; n++) {
+    i = (i + (dir || 1) + rows.length) % rows.length;
+    if (!todo || pstat(rows[i].ref) === "in") return selectPart(side, rows[i].ref);
+  }
+  if (todo) say(`Every part in the check on the ${side} that's in this list is answered.`);
+}
+async function selDo(side, a, extra = {}) {
+  const ref = ui.look[side], d = SEL.d && SEL.d.ref === ref ? SEL.d : null, src = sideSrc(side), k = pstat(ref);
+  if (!ref) return;
+  if (a === "close") return selectPart(side, null);
+  if (a === "prev" || a === "next") return stepPart(side, a === "prev" ? -1 : 1);
+  if (a === "todo") return stepPart(side, 1, true);
+  if (a === "map") { goTab("map"); return bvSelect(ref, null, true); }
+  if (a === "bad" && !extra.reason) { ui.badPick = !ui.badPick; return renderSel(side); }
+  const kind = $("#sel-kind") ? $("#sel-kind").value : "look";
+  let done = "";
+  try {
+    if (a === "good" || a === "bad" || a === "missing") {
+      const reason = a === "missing" ? "missing" : extra.reason || "", note = $("#sel-note") ? $("#sel-note").value : "";
+      SEL.d = await post("api/part/teach", { src, ref, answer: a === "good" ? "good" : "bad", reason, note, kind: k === "off" ? kind : null });
+      done = `${ref}: ${a === "good" ? "GOOD" : a === "missing" ? "MISSING" : "BAD"}, kept as a learned example${k === "off" ? ", and put in the check" : ""}.`;
+    } else if (a === "ns" || a === "nsall") {
+      const every = a === "nsall", on = every ? !(d && d.ns === "all") : !(d && d.ns === "board");
+      SEL.d = await post("api/part/ns", { src, ref, on, all: every });
+      done = !on ? `${ref}: NS undone, it's checked again.` : every ? `${ref}: not stuffed on every board of this design.` : `${ref}: not stuffed on this board.`;
+    } else if (a === "undo") {
+      if (d && d.ns) SEL.d = await post("api/part/ns", { src, ref, on: false });
+      else if (d && d.taught) await post(`api/check/learned/${encodeURIComponent(d.board)}/${side}/delete`, { id: d.taught.id });
+      done = `${ref}: answer taken back.`;
+    } else if (a === "add") {
+      await post("api/part/extra", { ref, kind });
+      done = `${ref} put in the check as ${KIND_NAMES[kind]}.`;
+    } else if (a === "wait") {
+      await post("api/part/extra", { ref, kind: d && d.in_check ? null : kind, board: d && d.board, wait: !(d && d.wait) });
+      done = d && d.wait ? `${ref} no longer waits for a photo.` : `${ref} will be asked about on the next check of the ${side}.`;
+    } else if (a === "remove") {
+      if (d && d.extra) await post("api/part/extra", { ref, remove: true });
+      else {
+        const l = S.lines.find(x => x.refs.includes(ref));
+        if (!l) return say(`${ref} isn't on a BOM line; take it out on the Parts tab.`, true);
+        if (!confirm(`${ref} is in the check through its BOM line ${l.value || l.description} (${plural(l.on_board.length, "part")}). Take the whole line out of the check? What it has learned is kept.`)) return;
+        await post("api/lines", { [l.key]: { kind: "" } });
+      }
+      done = `${ref} taken out of the check. What it has learned is kept.`;
+    }
+  } catch (e) { return say(e.message, true); }
+  ui.badPick = false; PL.uid = null;
+  say(done);
+  await refreshState();
+  selectPart(side, ref, false);
+}
+$("#sel-part").addEventListener("click", e => {
+  const r = e.target.closest("[data-reason]"); if (r) return selDo(tab, "bad", { reason: r.dataset.reason });
+  const b = e.target.closest("[data-a]"); if (b) selDo(tab, b.dataset.a);
+});
+document.addEventListener("keydown", e => {
+  if ((tab !== "front" && tab !== "back") || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, select, textarea")) return;
+  const side = tab, k = e.key, on = !!ui.look[side];
+  const keys = { ArrowDown: "next", ArrowRight: "next", ArrowUp: "prev", ArrowLeft: "prev", " ": "todo", Escape: "close", g: "good", b: "bad", m: "missing", n: "ns", a: "add" };
+  if (k === "0") return ZS.fit();
+  if (!keys[k] && !keys[k.toLowerCase()]) return;
+  const a = keys[k] || keys[k.toLowerCase()];
+  if (!on && !["next", "prev", "todo"].includes(a)) return;
+  if (a === "add" && pstat(ui.look[side]) !== "off") return;
+  e.preventDefault();
+  if (!on) return stepPart(side, a === "prev" ? -1 : 1, a === "todo");
+  selDo(side, a);
+});
+$("#parts-svg").addEventListener("click", e => {
+  const p = e.target.closest("polygon[data-ref]"); if (!p || !ui.pick) return;
+  e.stopPropagation();
+  selectPart(tab, p.dataset.ref === ui.look[tab] ? null : p.dataset.ref, false);
+  const row = $$("#side-parts > div[data-ref]").find(d => d.dataset.ref === p.dataset.ref);
+  if (row) row.scrollIntoView({ block: "nearest" });
+});
 $("#photo").addEventListener("click", async e => {
   const side = tab; if (side !== "front" && side !== "back") return;
   if (!ui.closeup && S.sides[side].aligned && ui.pick) {
     const rect = $("#photo").getBoundingClientRect();
     try {
       const r = await post("api/part/pick", { src: sideSrc(side), fx: (e.clientX - rect.left) / rect.width, fy: (e.clientY - rect.top) / rect.height });
-      if (r.ref) lookAt(side, r.ref); else say("No part there. Click on a part's body.", true);
+      if (r.ref) selectPart(side, r.ref); else say("No part there. Click on a part's body.", true);
     } catch (err) { say(err.message, true); }
     return;
   }
@@ -626,10 +923,16 @@ $("#photo").addEventListener("click", async e => {
     if (pts[ref] === xy) { pts[ref] = sn.xy; drawMarks(side); }
   } catch (err) { /* keep the click as it was */ }
 });
+$("#setup").addEventListener("toggle", () => {
+  const side = tab, st = S.sides[side];
+  if ((side !== "front" && side !== "back") || !st || !st.aligned || ui.closeup || $("#setup").open === ui.setupOpen) return;
+  ui.setupOpen = $("#setup").open;
+  if (ui.setupOpen) { ui.pts[side] = { ...(st.points || {}) }; ui.cur[side] = nextPrompt(side); }
+  renderSide(side);
+});
 $("#prompts").addEventListener("click", e => {
   const d = e.target.closest("[data-i]"); if (!d) return;
   const side = tab, i = +d.dataset.i;
-  ui.pick = false;                                       // clicks place fiducials again
   delete curPts(side)[prompts(side)[i].ref];           // pick a row to redo it
   if (ui.closeup) ui.closeup.cur = i; else ui.cur[side] = i;
   renderSide(side);
@@ -652,8 +955,8 @@ $("#auto-find").addEventListener("click", async () => {
 $("#do-align").addEventListener("click", () => {
   const side = tab, cu = ui.closeup;
   if (cu) return act(() => post(`api/side/${side}/closeup/${cu.index}/align`, { points: cu.pts }), "Closeup lined up.");
-  act(async () => { const s = await post(`api/side/${side}/align`, { points: ui.pts[side] }); S = s; ui.pick = true; await loadRotation(side); return s; },
-    "Lined up. Coloured outlines can be checked; grey ones can't (see the list). Click any part to look at it.");
+  act(async () => { const s = await post(`api/side/${side}/align`, { points: ui.pts[side] }); S = s; ui.setupOpen = false; await loadRotation(side); return s; },
+    "Lined up. Each part is outlined in its status colour (see the legend under the photo). Click any part to select it.");
 });
 async function loadRotation(side) {
   try { ui.rot[side] = await api(`api/side/${side}/rotation`); } catch (e) { ui.rot[side] = null; }
@@ -670,18 +973,25 @@ $("#tiles").addEventListener("click", e => {
   const side = tab, i = +b.dataset.tile, c = S.sides[side].closeups.find(c => c.index === i);
   ui.closeup = { side, index: i, pts: c ? { ...c.points } : {}, cur: 0 };
   ui.closeup.cur = nextPrompt(side);
+  ZS.w = 0;
   say(c ? "" : "Frame just this area of the board, as close as the camera will focus, then take the photo or choose a file.");
   renderSide(side);
 });
-$("#align-result").addEventListener("click", e => { if (e.target.id === "back-full") { ui.closeup = null; stopCamera(); renderSide(tab); } });
-$("#parts-filter").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { ui.partsFilter = b.dataset.f; keepUi(); renderSide(tab); } });
+$("#align-result").addEventListener("click", e => { if (e.target.id === "back-full") { ui.closeup = null; ZS.w = 0; stopCamera(); renderSide(tab); } });
+$("#side-legend").addEventListener("click", e => { const b = e.target.closest("[data-stat]"); if (b) { ui.sideStat = ui.sideStat === b.dataset.stat ? "all" : b.dataset.stat; renderSide(tab); } });
 $("#marks-on").addEventListener("change", e => { ui.marks = e.target.checked; keepUi(); renderSide(tab); });
-$("#side-parts").addEventListener("click", e => { const tr = e.target.closest("tr[data-ref]"); if (!tr) return;
-  if (ui.highlight === tr.dataset.ref) { ui.highlight = null; ui.look[tab] = null; $("#look-insp").innerHTML = ""; renderSide(tab); }
-  else lookAt(tab, tr.dataset.ref); });
-$("#look-pick").addEventListener("change", e => { ui.pick = e.target.checked; });
-$("#look-go").addEventListener("click", () => { const r = typedRef($("#look-ref").value); if (r) lookAt(tab, r); });
-$("#look-ref").addEventListener("change", () => { const r = typedRef($("#look-ref").value); if (r) lookAt(tab, r); });
+$("#side-parts").addEventListener("click", e => {
+  const a = e.target.closest("[data-add]");
+  if (a) { e.stopPropagation(); ui.look[tab] = a.dataset.add; return selDo(tab, "add"); }
+  const r = e.target.closest("div[data-ref]"); if (r) selectPart(tab, r.dataset.ref === ui.look[tab] ? null : r.dataset.ref);
+});
+$("#side-q").addEventListener("input", () => renderSide(tab));
+$("#side-q").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  const rows = shownRows(tab), r = rows.length === 1 ? rows[0].ref : typedRef($("#side-q").value);
+  if (r) { $("#side-q").value = ""; renderSide(tab); selectPart(tab, r); }
+});
+$("#ghost-op").addEventListener("input", e => { ui.ghostOp = +e.target.value; $("#ghost").style.opacity = ui.ghostOp / 100; keepUi(); });
 
 // ---- the camera ------------------------------------------------------------------------------
 // A webcam (in the browser), or a Canon EOS on USB driven by the server with gphoto2: its live view
@@ -757,7 +1067,8 @@ function sendPhoto(blob) {
   const url = cu ? `api/side/${side}/closeup/${cu.index}/photo` : `api/side/${side}/photo`;
   act(async () => {
     const s = await upload(url, blob); S = s; S._v = Date.now();
-    if (cu) { cu.pts = {}; cu.cur = 0; } else { ui.pts[side] = {}; ui.cur[side] = 0; ui.rot[side] = null; }
+    if (cu) { cu.pts = {}; cu.cur = 0; } else { ui.pts[side] = {}; ui.cur[side] = 0; ui.rot[side] = null; ui.look[side] = null; }
+    ZS.w = 0;
     return s;
   }, cu ? "Now click each point listed, on the closeup." : "Now click each fiducial, in the order listed.");
 }
@@ -785,7 +1096,7 @@ function typedRef(text) {
   const byVal = PL.parts.filter(p => (p.value || "").toLowerCase() === text.trim().toLowerCase());
   return byVal.length ? byVal[0].ref : t;
 }
-const VERDICT_TEXT = { correct: "CORRECT", wrong: "WRONG", unsure: "NOT SURE", skipped: "SKIPPED", reference: "REFERENCE", ns: "NOT STUFFED" };
+const VERDICT_TEXT = { correct: "LOOKS RIGHT", wrong: "LOOKS WRONG", unsure: "NOT SURE", skipped: "NOT COMPARED", reference: "REFERENCE PHOTO", ns: "NOT STUFFED" };
 const partCrop = (src, ref, which, v) => `api/part/crop?src=${encodeURIComponent(src)}&ref=${encodeURIComponent(ref)}&which=${which}&v=${v || ""}`;
 function reasonSelect(cls, cur) {
   const rs = Object.keys(PL.reasons).length ? PL.reasons : (S && S.reasons) || {};
@@ -798,21 +1109,24 @@ async function showPart(el, src, ref, after) {
   try { d = await api(`api/part/info?src=${encodeURIComponent(src)}&ref=${encodeURIComponent(ref)}`); }
   catch (e) { el.innerHTML = `<div class="warn">${esc(e.message)}</div>`; return; }
   const v = Date.now(), ans = d.answer;
+  const a = d.ns === "board" ? "ns" : ans === "correct" ? "good" : ans === "wrong" ? (d.reason === "missing" ? "missing" : "bad") : selAnswer({ taught: d.taught }, null);
   el.innerHTML = `<div class="insp">
-    <div><b>${esc(d.ref)}</b> ${d.in_check ? esc(KIND_NAMES[d.kind] || d.kind) : `<span class="dim">not in the check</span>`} · ${esc(d.value || "")}
+    <div><b style="font-size:17px">${esc(d.ref)}</b> ${d.in_check ? esc(KIND_NAMES[d.kind] || d.kind) : chip("off")} · ${esc(d.value || "")}
       ${d.description ? `<span class="dim">${esc(d.description)}</span>` : ""} <span class="dim">${esc(d.package || "")}${d.in_bom ? "" : " · not in the BOM"}</span></div>
     <div class="row"><span class="verdict v-${d.verdict}">${VERDICT_TEXT[d.verdict] || d.verdict}</span><span class="dim grow">${esc(d.why)}</span></div>
     <div class="pics"><figure><img src="${partCrop(src, d.ref, "board", v)}" alt="">${esc(d.label)}</figure>
       ${d.reference && !d.verdict.startsWith("ref") ? `<figure><img src="${partCrop(src, d.ref, "reference", v)}" alt="">reference</figure>` : ""}</div>
     ${modelLine(d)}
     <div class="dim">Learned so far: ${d.good} good, ${d.bad} bad${d.pending ? " · waiting for a new photo to be taught on" : ""}${ans ? ` · this board answered ${ans === "correct" ? "GOOD" : "BAD"}` : ""}</div>
-    <div class="row">${d.in_check ? "" : `<select class="t-kind" title="What kind of part to check it as">${Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`}
-      <button data-t="good" class="${ans === "correct" ? "on" : ""}">GOOD</button><button data-t="bad" class="wrongbtn ${ans === "wrong" && d.reason !== "missing" ? "on" : ""}">BAD</button>
-      <button data-t="missing" class="wrongbtn ${ans === "wrong" && d.reason === "missing" ? "on" : ""}" title="It should be there but isn't: a fault, kept as a bad example">MISSING</button>
-      <button data-t="ns" class="${d.ns === "board" ? "on" : ""}" title="Not stuffed: left off this board on purpose, not a fault. Press again to undo">NS</button>
-      ${reasonSelect("t-reason", d.reason)}<input class="note t-note" value="${esc(d.note || "")}" placeholder="Note (kept with the example)"></div>
-    <div class="row"><button data-t="nsall" class="${d.ns === "all" ? "on" : ""}" title="Not stuffed on every board of this design from now on. Press again to undo">${d.ns === "all" ? "NS ON EVERY BOARD ✓ (UNDO)" : "NS ON EVERY BOARD OF THIS DESIGN"}</button></div>
-    ${d.in_check && !d.extra ? "" : `<div class="row">${d.in_check ? "" : `<button data-t="add">ADD TO THE CHECK</button>`}<button data-t="wait" class="${d.wait ? "on" : ""}">${d.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO"}</button></div>`}
+    <div class="answers">
+      <button data-t="good" class="a-good ${a === "good" ? "on" : ""}">GOOD</button><button data-t="bad" class="a-bad ${a === "bad" ? "on" : ""}">BAD</button>
+      <button data-t="missing" class="a-missing ${a === "missing" ? "on" : ""}" title="It should be there but isn't: a fault, kept as a bad example">MISSING</button>
+      <button data-t="ns" class="a-ns ${a === "ns" ? "on" : ""}" title="Not stuffed: left off this board on purpose, not a fault. Press again to undo">NS</button>
+      <details class="more"><summary>MORE</summary><div class="menu">
+        <button data-t="nsall" class="${d.ns === "all" ? "on" : ""}" title="Not stuffed on every board of this design from now on. Press again to undo">${d.ns === "all" ? "NS ON EVERY BOARD ✓ (UNDO)" : "NS ON EVERY BOARD OF THIS DESIGN"}</button>
+        ${d.in_check && !d.extra ? "" : `<button data-t="wait" class="${d.wait ? "on" : ""}">${d.wait ? "WAITING FOR A NEW PHOTO ✓" : "WAIT FOR A NEW PHOTO"}</button>`}</div></details></div>
+    <div class="row">${reasonSelect("t-reason", d.reason)}<input class="note t-note" value="${esc(d.note || "")}" placeholder="Note (kept with the example)"></div>
+    ${d.in_check ? "" : `<div class="row"><select class="t-kind" title="What kind of part to check it as">${kindOptions()}</select><button data-t="add" class="accent">+ ADD TO THE CHECK</button></div>`}
     ${d.examples.length ? `<div class="dim">${d.examples.map(e => `<span class="${e.label === "good" ? "st-ok" : "st-wrong"}">${e.label.toUpperCase()}</span>${e.reason ? " " + esc(PL.reasons[e.reason] || e.reason) : ""}${e.note ? " · " + esc(e.note) : ""} <span class="dim">${esc(e.serial || "")} ${esc(e.date)}</span>`).join("<br>")}</div>` : ""}
   </div>`;
   el.onclick = async e => {
@@ -849,22 +1163,23 @@ function renderMap() {
   let html = `<div class="kv">`;
   for (const side of ["front", "back"]) {
     const st = S.sides[side], n = d.parts.filter(p => p.side === SIDES[side]).length;
-    html += `<b>${side === "front" ? "Front" : "Back"}</b><span>${n} polarised · ${st && st.aligned ? `${st.summary.checkable} checkable${st.summary.via_closeup ? ` (${st.summary.via_closeup} on closeups)` : ""}` : st && st.photo ? "photo not lined up yet" : "no photo yet"}</span>`;
+    html += `<b>${side === "front" ? "Front" : "Back"}</b><span>${n} in the check · ${st && st.aligned ? `${st.summary.checkable} checkable${st.summary.via_closeup ? ` (${st.summary.via_closeup} on closeups)` : ""}` : st && st.photo ? "photo not lined up yet" : "no photo yet"}</span>`;
     if (st && st.aligned) st.placed.filter(r => !r.checkable).forEach(r => rows.push({ side, ...r }));
   }
   html += `</div>`;
   $("#map-summary").innerHTML = html;
   const isRef = S.project && S.project.reference;
   $("#map-ref").textContent = isRef ? "THE REFERENCE FOR CHECKS ✓" : "USE AS THE REFERENCE FOR CHECKS";
-  $("#map-ref").classList.toggle("on", !!isRef);
-  $("#map-ref-note").textContent = isRef ? `Other ${S.project.board} boards are checked against this one on the Check a board tab. Press again to stop using it.`
-    : "Once this board has been checked by hand, make it the reference: other boards of this type can then be checked against it on the Check a board tab.";
+  $("#map-ref").classList.toggle("accent", !isRef); $("#map-ref").classList.toggle("on", !!isRef);
+  $("#map-ref-note").textContent = isRef ? `Other ${S.project.board} boards are checked against this one. Press again to stop.`
+    : "Once this board has been checked by hand, make it the reference for other boards of this type.";
   $("#map-folder").textContent = `Everything for this board is kept with the project in the app's data folder under projects/${S.project ? S.project.uid : ""}/ (the ODB++ and BOM, design.json, parts_map.csv, and each side's reference.jpg, alignment.json, parts.json and map.jpg), and listed on the History tab.`;
   renderViewer();
-  $("#unchecked tbody").innerHTML = rows.map(r => `<tr><td>${r.side}</td><td>${esc(r.ref)}</td><td>${KIND_NAMES[r.kind]}</td><td>${esc(r.value)}</td><td>${esc(r.reason)}</td></tr>`).join("")
-    || `<tr><td colspan="5" class="no">Nothing yet. Line up a photo of each side first.</td></tr>`;
+  $("#unchecked tbody").innerHTML = rows.map(r => `<tr class="click" data-bvref="${esc(r.ref)}"><td>${r.side}</td><td><b>${esc(r.ref)}</b></td><td>${KIND_NAMES[r.kind]}</td><td>${esc(r.value)}</td><td>${chip("cant")} <span class="dim">${esc(r.reason)}</span></td></tr>`).join("")
+    || `<tr><td colspan="5" class="no">${S.sides.front && S.sides.front.aligned || S.sides.back && S.sides.back.aligned ? "Every part in the check can be checked on the photos." : "Nothing yet. Line up a photo of each side first."}</td></tr>`;
 }
 
+$("#unchecked").addEventListener("click", e => { const r = e.target.closest("[data-bvref]"); if (r) bvSelect(r.dataset.bvref, null, true); });
 $("#map-ref").addEventListener("click", async () => {
   if (!S || !S.project) return;
   try {
@@ -881,14 +1196,11 @@ $("#map-ref").addEventListener("click", async () => {
 // is one. Everything is drawn in view coordinates: board units with the side's orientation applied
 // (x' = sx x, y' = sy y, see viewer.py), the photo already warped into that frame by the server.
 const BV = {
-  uid: null, g: null, pins: null, st: {}, side: "front", photoOn: true, photoOp: 85, rats: false,
-  sel: { ref: null, net: null, list: null }, view: null, img: {}, parts: {}, netPins: null, knob: null, frame: 0, loading: false,
+  uid: null, g: null, pins: null, st: {}, side: "front", photoOn: true, photoOp: 85, rats: false, stat: "all",
+  sel: { ref: null, net: null, list: null }, view: null, img: {}, parts: {}, netPins: null, frame: 0, loading: false,
 };
 try { Object.assign(BV, JSON.parse(localStorage.getItem("aoimap-bv") || "{}"), { sel: { ref: null, net: null, list: null } }); } catch (e) { }
 const keepBv = () => { try { localStorage.setItem("aoimap-bv", JSON.stringify({ side: BV.side, photoOn: BV.photoOn, photoOp: BV.photoOp, rats: BV.rats })); } catch (e) { } };
-const BV_COL = { good: "#6FCF73", checked: "#6FCF73", bad: "#FF6B5B", ns: "#9A9A9A", skipped: "#E0A33A", nophoto: "#E0A33A", off: "#8A909C" };
-const BV_TEXT = { good: "GOOD (answered on this board)", checked: "checked", bad: "BAD (answered on this board)", ns: "NS: not stuffed",
-  skipped: "in the check, but the photo can't show it", nophoto: "in the check, no lined-up photo of its side yet", off: "not in the check" };
 const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true });
 const sideOf = p => p.s === "top" ? "front" : "back";
 
@@ -924,9 +1236,17 @@ async function bvOpen() {
   finally { BV.loading = false; }
 }
 async function bvStatus() {
-  try { BV.st = (await api("api/viewer/status")).parts; } catch (e) { BV.st = {}; }
-  bvInfo(); bvDraw();
+  BV.st = await loadStatus();
+  bvInfo(); bvDraw(); mapLegend();
 }
+// the legend with counts for the side shown; a count shows only those parts brightly
+function mapLegend() {
+  if (!BV.g) return;
+  const layer = SIDES[BV.side];
+  statusBar($("#map-legend"), BV.g.parts.filter(p => p.s === layer && !p.f).map(p => ustat(BV.st[p.r])), BV.stat, `parts on the ${BV.side}`);
+  $("#map-legend").insertAdjacentHTML("beforeend", `<span class="grow"></span><span class="hintkeys">Wheel: zoom · drag: move · click a part or pin · F: flip · 0: fit · Esc: clear</span>`);
+}
+$("#map-legend").addEventListener("click", e => { const b = e.target.closest("[data-stat]"); if (b) { BV.stat = BV.stat === b.dataset.stat ? "all" : b.dataset.stat; mapLegend(); bvDraw(); } });
 // the side's photo, warped into the viewer's frame by the server
 function bvPhoto() {
   const sd = BV.g && BV.g.sides[BV.side];
@@ -1017,21 +1337,22 @@ function bvPaint() {
   // the parts on this side, coloured by their check status
   ctx.lineJoin = "round";
   const lab = [];
+  const pickSt = STAT_PICK[BV.stat] || STAT_PICK.all;
   for (const p of g.parts) {
     if (p.s !== layer) continue;
-    const st = BV.st[p.r], code = p.f ? "fid" : st ? st.st : "off";
-    const col = p.f ? "#8A909C" : BV_COL[code] || BV_COL.off;
-    const on = p === selPart, inNet = netSet && netSet.has(p.r);
+    const code = p.f ? "fid" : ustat(BV.st[p.r]);
+    const col = p.f ? "#8A909C" : STATUS_COL[code] || STATUS_COL.off;
+    const on = p === selPart, inNet = netSet && netSet.has(p.r), dim = !on && !inNet && !p.f && BV.stat !== "all" && !pickSt(code);
     path(p.c);
-    if (on) { ctx.fillStyle = "rgba(255,212,94,.18)"; ctx.fill(); }
+    if (on) { ctx.fillStyle = "rgba(255,224,102,.2)"; ctx.fill(); }
     ctx.setLineDash(code === "ns" ? [5, 4] : []);
-    ctx.strokeStyle = on ? "#FFD45E" : inNet ? "#FFD45E" : col;
-    ctx.globalAlpha = code === "off" && !on && !inNet ? (pic ? .55 : .7) : 1;
+    ctx.strokeStyle = on ? "#FFE066" : inNet ? "#FFE066" : col;
+    ctx.globalAlpha = dim ? .12 : code === "off" && !on && !inNet ? (pic ? .55 : .7) : 1;
     ctx.lineWidth = on ? 3 : inNet ? 2 : code === "off" || code === "fid" ? 1 : 1.8;
     ctx.stroke();
     ctx.globalAlpha = 1;
     const [a, b] = toS(p.x, p.y), size = Math.min(Math.abs(p.b[2] - p.b[0]), Math.abs(p.b[3] - p.b[1])) * v.s;
-    if (on || inNet || size > 22) lab.push([p, a, b, size, on || inNet, col]);
+    if (on || inNet || (size > 22 && !dim)) lab.push([p, a, b, size, on || inNet, col]);
   }
   ctx.setLineDash([]);
   // net lines: the shortest tree joining the chosen net's pins
@@ -1117,7 +1438,7 @@ function bvHit(px, py) {
 function bvSelect(ref, net = null, centre = false) {
   BV.sel = { ref, net, list: null };
   const p = ref && BV.parts[ref];
-  if (p && sideOf(p) !== BV.side && net == null) { BV.side = sideOf(p); keepBv(); bvPhoto(); BV.view = null; }
+  if (p && sideOf(p) !== BV.side && net == null) { BV.side = sideOf(p); keepBv(); bvPhoto(); BV.view = null; mapLegend(); }
   if (centre && p) {
     if (!BV.view) bvFit();
     const { w, h } = bvCanvas(), [wx, wy] = toW(p.x, p.y);
@@ -1131,7 +1452,7 @@ function bvFlip() {
   if (!BV.g) return;
   const { w, h } = bvCanvas();
   const c = BV.view ? fromS(w / 2, h / 2) : null, s = BV.view && BV.view.s;
-  BV.side = BV.side === "front" ? "back" : "front"; keepBv(); bvPhoto();
+  BV.side = BV.side === "front" ? "back" : "front"; keepBv(); bvPhoto(); mapLegend();
   if (c) { const [wx, wy] = toW(...c); BV.view = { s, tx: w / 2 - wx * s, ty: h / 2 - wy * s }; } else BV.view = null;
   bvDraw();
 }
@@ -1164,21 +1485,20 @@ function bvInfo() {
   const p = sel.ref && BV.parts[sel.ref];
   let html = "";
   if (p) {
-    const st = BV.st[p.r] || { st: "off", why: "" }, ln = p.l ? g.lines[p.l] : null, side = sideOf(p);
+    const st = BV.st[p.r] || { st: "off", why: "" }, ln = p.l ? g.lines[p.l] : null, side = sideOf(p), k = ustat(st);
     const kind = st.kind ? KIND_NAMES[st.kind] || st.kind : null;
     const aligned = S.sides[side] && S.sides[side].aligned;
-    html += `<div class="insp"><div><b style="font-size:16px">${esc(p.r)}</b> ${kind ? esc(kind) : `<span class="dim">${p.f ? "fiducial" : "not in the check"}</span>`}
-        · ${esc(p.v || "")} <span class="dim">${esc(p.k)} · ${side}</span></div>
+    html += `<div class="selpanel" style="position:static"><div class="head"><span class="ref">${esc(p.r)}</span>${p.f ? `<span class="chip st-off">FIDUCIAL</span>` : chip(k, "", "big solid")}</div>
+      <div class="what">${esc(p.v || "")} · ${kind ? esc(kind) : p.f ? "used to line the photo up" : "not in the check"} · ${esc(p.k)} · ${side}</div>
       <div class="kv">
         <b>BOM line</b><span>${ln ? `${esc(ln.value || "")} ${ln.description ? `<span class="dim">${esc(ln.description)}</span>` : ""} · ${plural(ln.qty, "part")}${ln.dnp ? " · DNP" : ""}` : `<span class="dim">not in the BOM</span>`}</span>
-        <b>Check</b><span>${p.f ? `<span class="dim">fiducial, used to line the photo up</span>` : `<span class="bvst-${st.st}">${esc(BV_TEXT[st.st] || st.st)}</span>${st.why && st.why !== BV_TEXT[st.st] ? ` <span class="dim">${esc(st.why)}</span>` : ""}`}</span>
-        ${p.f ? "" : `<b>Learned</b><span>${st.good || 0} good, ${st.bad || 0} bad${st.extra ? " · added by hand" : ""}</span>`}
+        ${p.f ? "" : `<b>Why</b><span>${esc(st.why || STATUS[k].tip)}</span><b>Learned</b><span>${st.good || 0} good, ${st.bad || 0} bad${st.extra ? " · added one by one" : ""}</span>`}
       </div>
-      ${p.f ? "" : `<div class="row"><button id="bv-look" ${aligned ? "" : `disabled title="Line up a photo of the ${side} first"`}>LOOK AT A PART</button>
-        ${st.kind ? "" : `<select id="bv-kind" title="What kind of part to check it as">${Object.entries(KIND_NAMES).map(([k, t]) => `<option value="${k}" ${k === "look" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select><button id="bv-add">ADD TO CHECK</button>`}</div>`}</div>`;
+      ${p.f ? "" : `<div class="addrow"><button id="bv-look" class="${k === "off" ? "" : "accent"}" ${aligned ? "" : `disabled title="Line up a photo of the ${side} first"`}>SELECT ON THE ${side.toUpperCase()} PHOTO</button>
+        ${k !== "off" ? "" : `<span class="grow"></span><select id="bv-kind" title="Check it as">${kindOptions()}</select><button id="bv-add" class="accent">+ ADD TO THE CHECK</button>`}</div>`}</div>`;
     const rows = BV.pins ? (BV.pins[p.r] || []).map((q, i) => [q, i]).sort((a, b) => natural(a[0][0], b[0][0])) : null;
     html += `<h3>PINS${rows ? ` (${rows.length})` : ""}</h3>` + (!rows ? `<p class="dim">Reading the pins...</p>`
-      : `<div class="tablewrap bv-pins"><table><thead><tr><th>Pin</th><th>Net</th><th>Parts on it</th></tr></thead><tbody>${rows.map(([q]) => {
+      : `<div class="bv-pins"><table><thead><tr><th>Pin</th><th>Net</th><th>Parts on it</th></tr></thead><tbody>${rows.map(([q]) => {
         const n = q[3], cnt = n >= 0 ? new Set((BV.netPins[n] || []).map(([r]) => r)).size : 0;
         return `<tr class="${n >= 0 && n === sel.net ? "on" : ""}"><td>${esc(q[0])}</td><td class="net">${n >= 0 ? `<a data-bvnet="${n}" data-bvkeep="1">${esc(g.nets[n])}</a>` : `<span class="dim">not connected</span>`}</td><td>${n >= 0 ? cnt : ""}</td></tr>`;
       }).join("")}</tbody></table></div>`);
@@ -1190,7 +1510,7 @@ function bvInfo() {
     const nFront = refs.filter(r => BV.parts[r].s === "top").length;
     html += `<h3>NET ${esc(g.nets[sel.net])}</h3><p class="dim">${plural(pins.length, "pin")} on ${plural(refs.length, "part")}: ${nFront} on the front, ${refs.length - nFront} on the back.
       Pins on the other side show as yellow rings; FLIP to see them.</p>
-      <div class="tablewrap bv-pins"><table><thead><tr><th>Part</th><th>Side</th><th>Value</th><th>Pins</th></tr></thead><tbody>${refs.map(r => `<tr><td>${bvRefLink(r)}</td><td>${sideOf(BV.parts[r])}</td><td>${esc(BV.parts[r].v || "")}</td><td>${esc(by[r].sort(natural).join(", "))}</td></tr>`).join("")}</tbody></table></div>`;
+      <div class="bv-pins"><table><thead><tr><th>Part</th><th>Side</th><th>Value</th><th>Pins</th></tr></thead><tbody>${refs.map(r => `<tr><td>${bvRefLink(r)}</td><td>${sideOf(BV.parts[r])}</td><td>${esc(BV.parts[r].v || "")}</td><td>${esc(by[r].sort(natural).join(", "))}</td></tr>`).join("")}</tbody></table></div>`;
   }
   el.innerHTML = html || `<p class="dim">Click a part or pin on the board, or find a ref, value or net above.</p>`;
 }
@@ -1200,13 +1520,19 @@ $("#bv-info").addEventListener("click", e => {
   if (n) return bvSelect(n.dataset.bvkeep ? BV.sel.ref : null, +n.dataset.bvnet);
   const p = BV.sel.ref && BV.parts[BV.sel.ref]; if (!p) return;
   if (e.target.id === "bv-look") { const side = sideOf(p); goTab(side); lookAt(side, p.r); }
-  if (e.target.id === "bv-add") act(() => post("api/part/extra", { ref: p.r, kind: $("#bv-kind").value }), `${p.r} added to the check. Train it on the ${sideOf(p)} tab, or wait for a new photo.`).then(bvStatus);
+  if (e.target.id === "bv-add") act(() => post("api/part/extra", { ref: p.r, kind: $("#bv-kind").value }), `${p.r} put in the check. Answer it on the ${sideOf(p)} tab, or wait for a new photo.`).then(() => { PL.uid = null; bvStatus(); });
 });
 $("#bv-q").addEventListener("change", e => bvFind(e.target.value));
 $("#bv-q").addEventListener("keydown", e => { if (e.key === "Enter") bvFind(e.target.value); });
 $("#bv-flip").addEventListener("click", bvFlip);
-$("#bv-fit").addEventListener("click", () => { BV.view = null; bvDraw(); });
-$("#bv-photo-on").addEventListener("change", e => { BV.photoOn = e.target.checked; keepBv(); bvDraw(); });
+$("#zoom-map").addEventListener("click", e => {
+  const b = e.target.closest("[data-z]"); if (!b || !BV.view) return;
+  if (b.dataset.z === "fit") { BV.view = null; return bvDraw(); }
+  const { w, h } = bvCanvas(), f = b.dataset.z === "in" ? 1.4 : 1 / 1.4, v = BV.view;
+  v.tx = w / 2 - (w / 2 - v.tx) * f; v.ty = h / 2 - (h / 2 - v.ty) * f; v.s *= f; bvDraw();
+});
+$("#bv-op").addEventListener("input", e => { BV.photoOp = +e.target.value; keepBv(); bvDraw(); });
+$("#bv-photo-on").addEventListener("change", e => { BV.photoOn = e.target.checked; $("#bv-op").disabled = !BV.photoOn; keepBv(); bvDraw(); });
 $("#bv-rats").addEventListener("change", e => { BV.rats = e.target.checked; keepBv(); bvDraw(); });
 document.addEventListener("keydown", e => {
   if (tab !== "map" || !BV.g || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, select, textarea")) return;
@@ -1254,7 +1580,7 @@ document.addEventListener("keydown", e => {
   window.addEventListener("resize", () => bvDraw());
 })();
 function renderViewer() {
-  if (!BV.knob) BV.knob = knob($("#knob-bvop"), BV.photoOp, v => { BV.photoOp = v; keepBv(); bvDraw(); });
+  $("#bv-op").value = BV.photoOp; $("#bv-op").disabled = !BV.photoOn;
   $("#bv-photo-on").checked = BV.photoOn; $("#bv-rats").checked = BV.rats;
   if (!S.project) return;
   if (BV.uid !== S.project.uid || !BV.g) bvOpen(); else { bvStatus(); }
@@ -1277,7 +1603,7 @@ async function loadModels() {
         <span class="dim grow">${run ? `Training: ${esc(p.step || "")}${p.pct != null ? ` (${p.pct}%)` : ""}. It runs in the background at low priority; you can keep working.`
           : p && p.state === "failed" ? `<span class="st-wrong">The last training stopped: ${esc(p.error || "")}</span>`
           : p && p.state === "done" ? `Last trained ${esc(p.finished || "")}.` : "Not trained yet."} Pictures described by: ${esc(b.features)}.</span></div>
-      <div class="tablewrap"><table class="md"><thead><tr><th>Model</th><th>Examples</th><th>Accuracy on parts it wasn't trained on</th><th>Trained</th><th></th></tr></thead><tbody>
+      <div><table class="md"><thead><tr><th>Model</th><th>Examples</th><th>Accuracy on parts it wasn't trained on</th><th>Trained</th><th></th></tr></thead><tbody>
       ${b.jobs.map(j => {
         const m = j.metrics;
         const auto = m ? Object.entries(m.auto || {}).map(([k, v]) => `${esc(k)} ${v}`).join(", ") : "";
@@ -1328,27 +1654,43 @@ async function loadHistory() {
     H.list = h.projects;
     $("#hist-status").textContent = (h.source === "database" ? `${h.total} board(s) mapped${H.all ? "" : " in this project"}, from the database.` : h.status) +
       (H.q ? ` ${h.projects.length} match.` : "");
-    $("#hist-list tbody").innerHTML = h.projects.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
+    histRows(h.projects.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
       <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}${r.uid === h.current ? ` <span class="ok">OPEN</span>` : ""}${r.reference ? ` <span class="dim">REFERENCE</span>` : ""}</td><td>${esc(r.serial)}</td>
       <td>${sideCell(r.front)}</td><td>${sideCell(r.back)}</td></tr>`).join("")
-      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No boards mapped yet."}</td></tr>`;
+      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No boards mapped yet."}</td></tr>`);
     if (!H.sel && h.projects.length) showProject(h.projects[0].uid);
     else if (H.sel) showProject(H.sel);
   } catch (e) { say(e.message, true); }
 }
+// the chosen row opens under itself (one scroller for the list and what's chosen)
+function placeDetail(uid) {
+  $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === uid));
+  const det = $("#hist-detail"), old = $("#hist-list tr.detailrow");
+  const tr = $$("#hist-list tr[data-uid]").find(x => x.dataset.uid === uid);
+  if (!tr) { $("#hist-scroll").append(det); if (old) old.remove(); return; }
+  let row = old;
+  if (!row) { row = document.createElement("tr"); row.className = "detailrow"; row.innerHTML = `<td colspan="5"></td>`; }
+  if (tr.nextElementSibling !== row) tr.after(row);
+  row.firstElementChild.append(det);
+}
+function histRows(html) { $("#hist-scroll").append($("#hist-detail")); $("#hist-list tbody").innerHTML = html; }
 const sideCell = s => !s.parts ? `<span class="dim">none</span>` : s.aligned ? `${s.checkable}/${s.parts}` : s.photo ? "photo" : `<span class="dim">–</span>`;
 $("#hist-search").addEventListener("input", e => { H.q = e.target.value; clearTimeout(H.timer); H.timer = setTimeout(loadHistory, 300); });
-$("#hist-list").addEventListener("click", e => { const tr = e.target.closest("[data-uid]"); if (tr) ({ checks: showCheck, learned: showLearned }[H.kind] || showProject)(tr.dataset.uid); });
+$("#hist-list").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-uid]"); if (!tr || e.target.closest("#hist-detail")) return;
+  if (H.sel === tr.dataset.uid && $("#hist-list tr.detailrow")) { H.sel = null; return placeDetail(null); }     // click again to fold it
+  ({ checks: showCheck, learned: showLearned }[H.kind] || showProject)(tr.dataset.uid);
+});
 
 async function loadChecks() {
   try {
     const h = await api(`api/history/checks?limit=200&q=${encodeURIComponent(H.q)}${histGroup()}`);
     $("#hist-status").textContent = (h.source === "database" ? `${h.total} check(s)${H.all ? "" : " in this project"}, from the database.` : h.status) + (H.q ? ` ${h.checks.length} match.` : "");
     const flagged = r => { const n = r.front.flagged + r.back.flagged, w = r.front.wrong.length + r.back.wrong.length; return w ? `<span class="st-wrong">${w} wrong</span>` : n ? `${n} looked at` : "none"; };
-    $("#hist-list tbody").innerHTML = h.checks.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
+    histRows(h.checks.map(r => `<tr class="click ${r.uid === H.sel ? "sel" : ""}" data-uid="${esc(r.uid)}">
       <td>${esc(r.updated.slice(0, 16))}</td><td>${esc(r.board)}</td><td>${esc(r.serial)}</td>
       <td><span class="badge ${esc(r.result)}">${esc(r.result)}</span></td><td>${flagged(r)}</td></tr>`).join("")
-      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No boards checked yet."}</td></tr>`;
+      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No boards checked yet."}</td></tr>`);
     if (!H.sel && h.checks.length) showCheck(h.checks[0].uid);
     else if (H.sel) showCheck(H.sel);
   } catch (e) { say(e.message, true); }
@@ -1359,19 +1701,36 @@ const STATUS_TEXT = { ok: "right way round", reversed: "looks reversed", rotated
 const FINE = r => r.status === "ok" || r.status === "ns";     // needs no answer
 const ckFile = (uid, side, name, extra = "") => `api/check/${encodeURIComponent(uid)}/file/${side}/${name}${extra}`;
 const ckCrop = (uid, side, ref, which) => `api/check/${encodeURIComponent(uid)}/crop/${side}/${encodeURIComponent(ref)}?which=${which}`;
+// a part of a board check, in the words and colours used everywhere
+function ckChip(r) {
+  if (r.answer === "correct") return chip("good", "", "solid");
+  if (r.answer === "wrong") return chip(r.reason === "missing" ? "missing" : "bad", "", "solid");
+  if (r.status === "ns") return chip("ns");
+  if (r.missed) return `<span class="chip st-bad">MISSED BY THE CHECK</span>`;
+  if (r.new) return `<span class="chip st-in">NEW PART, TEACH ME</span>`;
+  return `<span class="chip ${r.status === "check" ? "st-in" : "st-bad"}" title="Not answered yet">${esc(STATUS_TEXT[r.status].toUpperCase())}</span>`;
+}
+function ckLegend(s) {
+  const rs = s.results || [], n = f => rs.filter(f).length;
+  const item = (k, v, label) => `<span class="count st-${k}"><i></i><b>${v}</b><span>${label}</span></span>`;
+  $("#ck-legend").innerHTML = !s.aligned ? "" : `<span class="count all"><b>${rs.length}</b><span>parts checked</span></span>`
+    + item("in", n(r => !FINE(r) && !r.answer), "to look at") + item("good", n(r => r.answer === "correct" || (r.status === "ok" && !r.answer)), "good")
+    + item("bad", n(r => r.answer === "wrong" && r.reason !== "missing"), "bad") + item("missing", n(r => r.answer === "wrong" && r.reason === "missing"), "missing")
+    + item("ns", n(r => r.status === "ns"), "NS") + item("cant", (s.skipped || []).length, "can't be seen");
+}
 function flaggedHtml(c, side, editable) {
   const st = c.sides[side] || {}, rs = (st.results || []).filter(r => !FINE(r) || r.missed);
   return rs.map(r => `<div class="flag ${r.answer ? "answered" : ""}">
-      <div><b>${esc(r.ref)}</b> ${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)} · ${r.missed ? `<span class="st-wrong">missed by the check</span>` : r.new ? `<span class="st-check">new part, teach me</span>` : `<span class="st-${r.status}">${STATUS_TEXT[r.status]}</span>`}
+      <div class="row tight" style="gap:8px"><b style="font-size:17px">${esc(r.ref)}</b>${ckChip(r)}<span class="dim ell" style="margin:0">${KIND_NAMES[r.kind] || esc(r.kind)} ${esc(r.value)}</span></div><div>
         <div class="dim">${esc(r.why || "")}</div>${modelLine(r)}</div>
       <div class="pics"><figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "reference")}" alt="">reference</figure>
         <figure><img loading="lazy" src="${ckCrop(c.uid, side, r.ref, "board")}" alt="">this board</figure></div>
-      ${editable ? `<div class="row">${r.missed ? "" : `<button data-ans="correct" data-ref="${esc(r.ref)}" class="${r.answer === "correct" ? "on" : ""}">RIGHT WAY ROUND</button>`}
-        <button data-ans="wrong" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" && r.reason !== "missing" ? "on wrong" : ""}">WRONG</button>
-        <button data-ans="missing" data-ref="${esc(r.ref)}" class="${r.answer === "wrong" && r.reason === "missing" ? "on wrong" : ""}" title="It should be there but isn't: a fault">MISSING</button>
-        ${r.missed ? "" : `<button data-ns="board" data-ref="${esc(r.ref)}" title="Not stuffed: left off this board on purpose, not a fault">NS</button>
-        <button data-ns="all" data-ref="${esc(r.ref)}" title="Not stuffed on every board of this design from now on">NS ALL BOARDS</button>`}
-        ${reasonSelect("reason", r.reason).replace("<select ", `<select data-reason="${esc(r.ref)}" `)}
+      ${editable ? `<div class="answers">${r.missed ? "" : `<button data-ans="correct" data-ref="${esc(r.ref)}" class="a-good ${r.answer === "correct" ? "on" : ""}" title="It's right: the right way round">GOOD</button>`}
+        <button data-ans="wrong" data-ref="${esc(r.ref)}" class="a-bad ${r.answer === "wrong" && r.reason !== "missing" ? "on" : ""}" title="It's wrong (pick why beside)">BAD</button>
+        <button data-ans="missing" data-ref="${esc(r.ref)}" class="a-missing ${r.answer === "wrong" && r.reason === "missing" ? "on" : ""}" title="It should be there but isn't: a fault">MISSING</button>
+        ${r.missed ? "" : `<button data-ns="board" data-ref="${esc(r.ref)}" class="a-ns" title="Not stuffed: left off this board on purpose, not a fault">NS</button>
+        <details class="more"><summary>MORE</summary><div class="menu"><button data-ns="all" data-ref="${esc(r.ref)}" title="Not stuffed on every board of this design from now on">NS ON EVERY BOARD</button></div></details>`}</div>
+        <div class="row">${reasonSelect("reason", r.reason).replace("<select ", `<select data-reason="${esc(r.ref)}" `)}
         <input class="note" data-note="${esc(r.ref)}" value="${esc(r.note || "")}" placeholder="Note (kept with the example)"></div>
         ${r.answer ? `<div class="dim learnt">Learned as a ${r.answer === "correct" ? "good" : "bad"} example of ${esc(r.ref)}${r.example ? "" : " (since deleted)"}.</div>` : ""}`
       : `<div>${r.answer === "wrong" ? `<span class="st-wrong">Answered: wrong${r.reason ? " · " + esc(reasonName(r.reason)) : ""}${r.note ? " · " + esc(r.note) : ""}</span>` : r.answer === "correct" ? `Answered: right way round${r.note ? " · " + esc(r.note) : ""}` : `<span class="st-check">Not answered</span>`}</div>`}
@@ -1380,7 +1739,7 @@ function flaggedHtml(c, side, editable) {
 
 async function showCheck(uid) {
   H.sel = uid;
-  $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === uid));
+  placeDetail(uid);
   let c;
   try { c = await api(`api/check/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
   if (H.sel !== uid) return;
@@ -1418,10 +1777,10 @@ async function loadLearned() {
     const h = await api(`api/check/learned?${histGroup().slice(1)}`), q = H.q.toLowerCase();
     const rows = h.boards.filter(b => !q || b.board.toLowerCase().includes(q));
     $("#hist-status").textContent = "Examples the testers' answers have taught the board check, per board design.";
-    $("#hist-list tbody").innerHTML = rows.map(b => `<tr class="click ${b.board === H.sel ? "sel" : ""}" data-uid="${esc(b.board)}">
+    histRows(rows.map(b => `<tr class="click ${b.board === H.sel ? "sel" : ""}" data-uid="${esc(b.board)}">
       <td>${esc(b.board)}</td><td>${b.front.good}</td><td>${b.front.bad ? `<span class="st-wrong">${b.front.bad}</span>` : 0}</td>
       <td>${b.back.good}</td><td>${b.back.bad ? `<span class="st-wrong">${b.back.bad}</span>` : 0}</td></tr>`).join("")
-      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No board types yet."}</td></tr>`;
+      || `<tr><td colspan="5" class="no">${H.q ? "Nothing matches." : "No board types yet."}</td></tr>`);
     if (!rows.some(b => b.board === H.sel)) H.sel = rows.length ? rows[0].board : null;
     if (H.sel) showLearned(H.sel);
   } catch (e) { say(e.message, true); }
@@ -1429,7 +1788,7 @@ async function loadLearned() {
 const exUrl = (board, side, id) => `api/check/learned/${encodeURIComponent(board)}/${side}/${encodeURIComponent(id)}`;
 async function showLearned(board) {
   H.sel = board; H.lside = H.lside || "front";
-  $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === board));
+  placeDetail(board);
   const side = H.lside;
   let d;
   try { d = await api(`api/check/learned/${encodeURIComponent(board)}/${side}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
@@ -1469,7 +1828,7 @@ async function showLearned(board) {
 
 async function showProject(uid) {
   H.sel = uid;
-  $$("#hist-list tr[data-uid]").forEach(tr => tr.classList.toggle("sel", tr.dataset.uid === uid));
+  placeDetail(uid);
   let d;
   try { d = await api(`api/history/${encodeURIComponent(uid)}`); } catch (e) { $("#hist-detail").innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
   if (H.sel !== uid) return;
@@ -1510,11 +1869,11 @@ async function showProject(uid) {
     ${imgs.length ? `<div class="gallery">${imgs.map(f => `<a href="${fileUrl(uid, f.path)}" target="_blank" rel="noopener"><img loading="lazy" src="${fileUrl(uid, f.path, `?thumb=360&v=${encodeURIComponent(f.modified)}`)}" alt=""><span>${esc(label(f))}</span></a>`).join("")}</div>`
       : `<p class="dim">No photos were taken for this project.</p>`}
     <h3>CAN'T BE CHECKED</h3>
-    ${d.unchecked.length ? `<div class="tablewrap short"><table><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody>
+    ${d.unchecked.length ? `<div><table><thead><tr><th>Side</th><th>Ref</th><th>Kind</th><th>Value</th><th>Why</th></tr></thead><tbody>
       ${d.unchecked.map(r => `<tr><td>${r.side}</td><td>${esc(r.ref)}</td><td>${KIND_NAMES[r.kind] || esc(r.kind)}</td><td>${esc(r.value)}</td><td>${esc(r.reason)}</td></tr>`).join("")}</tbody></table></div>`
       : `<p class="dim">${d.front.aligned || d.back.aligned ? "Every placed part could be checked." : "No side was lined up."}</p>`}
     <h3>FILES</h3>
-    <div class="tablewrap short"><table><thead><tr><th>File</th><th>What</th><th>Size</th><th>Saved</th></tr></thead><tbody>
+    <div><table><thead><tr><th>File</th><th>What</th><th>Size</th><th>Saved</th></tr></thead><tbody>
       ${d.files.map(f => `<tr><td><a href="${fileUrl(uid, f.path, `?download=${encodeURIComponent(named(f).split("/").pop())}`)}">${esc(f.path)}</a>${named(f) !== f.path ? ` <span class="dim">${esc(named(f))}</span>` : ""}</td><td>${esc(f.kind)}${f.side ? " · " + f.side : ""}</td><td>${kb(f.bytes)}</td><td>${esc(f.modified.slice(0, 16))}</td></tr>`).join("")}</tbody></table></div>
     <h3>LOG</h3>
     <div class="list log">${d.log.map(e => `<div><span class="dim">${esc(e.at)}</span><span class="grow">${esc(e.what)}</span></div>`).join("") || `<div class="dim">Nothing logged.</div>`}</div>`;
@@ -1570,6 +1929,7 @@ function renderCheck() {
     $("#ck-sides").innerHTML = sides.map(x => { const y = c.sides[x]; const f = (y.results || []).filter(r => !FINE(r) && !r.answer).length;
       return `<button data-side="${x}" class="${x === CK.side ? "on" : ""}">${x.toUpperCase()}${y.aligned ? (f ? ` · ${f}` : " ✓") : ""}</button>`; }).join("");
     $("#ck-msg").hidden = !s.message; $("#ck-msg").textContent = s.message || "";
+    ckLegend(s);
     $("#ck-points").hidden = !(s.photo && !s.aligned);
     if (s.photo && !s.aligned) loadCkAnchors();
     $("#ck-look").hidden = !s.aligned;
@@ -1578,14 +1938,14 @@ function renderCheck() {
     $("#ck-flagged").innerHTML = s.aligned ? (fl ? `<h3>FLAGGED: LOOK AT EACH ONE</h3>${fl}` : `<p class="st-ok">Nothing flagged on the ${CK.side}.</p>`) : "";
     const ok = (s.results || []).filter(r => r.status === "ok" && !r.missed);
     const byLearning = ok.filter(r => r.learned === "good").map(r => r.ref), ns = (s.results || []).filter(r => r.status === "ns");
-    $("#ck-ok").innerHTML = s.aligned ? `<h3>RIGHT WAY ROUND (${ok.length})</h3><p class="dim">${esc(ok.map(r => r.ref).join(", ") || "none")}</p>` +
+    $("#ck-ok").innerHTML = s.aligned ? `<h3>GOOD: THE RIGHT WAY ROUND (${ok.length})</h3><p class="dim">${esc(ok.map(r => r.ref).join(", ") || "none")}</p>` +
       (byLearning.length ? `<p class="dim">Passed because they look like parts a tester confirmed: ${esc(byLearning.join(", "))}.</p>` : "") +
       (ok.length ? `<h3>DID THE CHECK MISS ONE?</h3><p class="dim">If one of these is wrong, flag it: it's kept as a bad example, and the reference's look of that part is no longer trusted.</p>
         <div class="row"><select id="ck-miss-ref">${ok.map(r => `<option>${esc(r.ref)}</option>`).join("")}</select>
-        ${reasonSelect("reason").replace("<select ", `<select id="ck-miss-reason" `)}<input id="ck-miss-note" class="note" placeholder="Note (kept with the example)"><button id="ck-miss" class="wrongbtn">FLAG AS WRONG</button></div>` : "") +
+        ${reasonSelect("reason").replace("<select ", `<select id="ck-miss-reason" `)}<input id="ck-miss-note" class="note" placeholder="Note (kept with the example)"><button id="ck-miss" class="a-bad">FLAG AS BAD</button></div>` : "") +
       (ns.length ? `<h3>NOT STUFFED (${ns.length})</h3><p class="dim">Left off on purpose, not faults.</p>` +
         ns.map(r => `<div class="row"><b>${esc(r.ref)}</b><span class="dim grow">${esc(r.why)}</span><button data-unns="${esc(r.ref)}">UNDO NS</button></div>`).join("") : "") +
-      ((s.skipped || []).length ? `<h3>NOT CHECKED HERE (${s.skipped.length})</h3><p class="dim">Look at these by eye: ${esc(s.skipped.map(r => r.ref).join(", "))}.</p>` : "") : "";
+      ((s.skipped || []).length ? `<h3>CAN'T BE SEEN (${s.skipped.length})</h3><p class="dim">Look at these by eye: ${esc(s.skipped.map(r => r.ref).join(", "))}.</p>` : "") : "";
   }
   renderCkViewer();
 }
@@ -1614,6 +1974,8 @@ function renderCkViewer() {
   }
   img.hidden = !src;
   if (src && !img.src.endsWith(src)) img.src = src;
+  if (live) { const v = $("#ck-video"), l = $("#ck-live"); ZC.size(CK.stream.canon ? l.naturalWidth : v.videoWidth, CK.stream.canon ? l.naturalHeight : v.videoHeight); }
+  else if (src && img.naturalWidth && img.complete) ZC.size(img.naturalWidth, img.naturalHeight);
   $("#ck-placeholder").hidden = live || !!src;
   $("#ck-placeholder").textContent = c ? `No photo of the ${CK.side} yet. Start the camera, line the board up with the ghost, and take the photo, or choose a file.` : "Start a check, then take or choose a photo of the board.";
   $("#ck-viewer").classList.toggle("clicking", !!(src && s.photo && !s.aligned));
@@ -1639,7 +2001,9 @@ function drawCkMarks() {
   const r = img.naturalWidth / 120;
   svg.innerHTML = Object.entries(CK.pts).map(([ref, [x, y]]) => `<circle class="pt" cx="${x}" cy="${y}" r="${r}" style="stroke-width:${r / 4}"/><text x="${x + r * 1.3}" y="${y - r * 1.3}" style="font-size:${r * 2}px">${esc(ref)}</text>`).join("");
 }
-$("#ck-photo").addEventListener("load", drawCkMarks);
+$("#ck-photo").addEventListener("load", () => { ZC.size($("#ck-photo").naturalWidth, $("#ck-photo").naturalHeight); drawCkMarks(); });
+$("#ck-video").addEventListener("loadedmetadata", () => renderCkViewer());
+$("#ck-live").addEventListener("load", () => { if (!ZC.w) renderCkViewer(); });
 const ckSrc = () => `check/${CK.st.check.uid}/${CK.side}`;
 function ckLook(ref) {
   $("#ck-look-ref").value = ref;

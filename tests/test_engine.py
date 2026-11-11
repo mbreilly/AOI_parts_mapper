@@ -504,7 +504,7 @@ def test_page_loads_versioned_scripts():
     for name in ("app.js", "app.css"):
         assert f"static/{name}?v={server.asset_version(name)}" in html
     # the parts table's header is drawn by the script with its rows, not written in the page
-    assert re.search(r'<table id="lines"><thead></thead>', raw)
+    assert re.search(r'<table id="lines"[^>]*><thead></thead>', raw)
     # the add bar sits above the table, with the filters
     assert raw.index('id="xp-add"') < raw.index('id="lines"') and raw.index('id="line-filter"') < raw.index('id="xp-add"')
 

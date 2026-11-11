@@ -30,6 +30,26 @@ srv = subprocess.Popen([sys.executable, "-m", "aoimap", "--port", str(port), "--
                        cwd=HERE.parent)
 time.sleep(1.5)
 errors = []
+# the page fills the window: the body never scrolls, and each tab has at most one box that scrolls
+SCROLLERS = """() => {
+  const res = [];
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (!r.width || !r.height || cs.visibility === 'hidden') continue;
+    if ((/(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1) ||
+        (/(auto|scroll)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 1)) res.push(el.id || el.className || el.tagName);
+  }
+  const d = document.scrollingElement;
+  return { body: d.scrollHeight > d.clientHeight + 1 || d.scrollWidth > d.clientWidth + 1, boxes: res };
+}"""
+
+
+def one_scroller(pg, where):
+    r = pg.evaluate(SCROLLERS)
+    assert not r["body"], f"{where}: the page itself scrolls"
+    assert len(r["boxes"]) <= 1, f"{where}: more than one scrollbar: {r['boxes']}"
+
+
 try:
     with sync_playwright() as p:
         exe = "/opt/pw-browsers/chromium"
@@ -41,8 +61,10 @@ try:
         pg.set_input_files("#file-odb", str(odb)); pg.wait_for_selector("#drop-odb.done")
         pg.set_input_files("#file-bom", str(bom)); pg.wait_for_selector("#design-box:not([hidden])")
         pg.screenshot(path=str(out / "1-files.png"))
+        one_scroller(pg, "files")
         pg.click("button[data-tab=parts]"); pg.wait_for_selector("#lines tbody tr")
         pg.screenshot(path=str(out / "2-parts.png"))
+        one_scroller(pg, "parts")
 
         def click_points(side, Hm, refs, design_pts):
             img = pg.locator("#photo")
@@ -64,6 +86,18 @@ try:
         pg.click("#do-align"); pg.wait_for_selector("#parts-box:not([hidden])")
         pg.wait_for_timeout(800)
         pg.screenshot(path=str(out / "3-front.png"))
+        one_scroller(pg, "front")
+        # select a part: the panel shows it, GOOD marks it on the list and the photo, UNDO takes it back
+        pg.click("#side-parts div[data-ref='C3']"); pg.wait_for_selector("#sel-part .ref")
+        assert pg.inner_text("#sel-part .ref") == "C3"
+        assert pg.eval_on_selector("#parts-svg polygon[data-ref='C3']", "p => p.classList.contains('sel')")
+        pg.click("#sel-part [data-a=good]"); pg.wait_for_selector("#side-parts div[data-ref='C3'] .chip.st-good")
+        assert "GOOD" in pg.inner_text("#sel-part .head")
+        pg.click("#sel-part [data-a=undo]"); pg.wait_for_selector("#side-parts div[data-ref='C3'] .chip.st-in")
+        pg.keyboard.press("ArrowDown"); pg.wait_for_timeout(300)
+        assert pg.inner_text("#sel-part .ref") != "C3"
+        one_scroller(pg, "front with a part selected")
+        pg.keyboard.press("Escape"); pg.wait_for_timeout(200)
         print("front:", pg.inner_text("#align-result")[:300].replace("\n", " | "))
         print("rotation box shown:", pg.is_visible("#rot-box"))
         # back, then the closeup for DB1-3
@@ -73,6 +107,7 @@ try:
         pg.click("#do-align"); pg.wait_for_selector("#closeup-box:not([hidden])")
         pg.wait_for_timeout(500)
         pg.screenshot(path=str(out / "4-back.png"))
+        one_scroller(pg, "back")
         tiles = pg.evaluate("fetch('/api/state').then(r => r.json()).then(s => s.sides.back.tiles)")
         t = next(t for t in tiles if "DB1" in t["refs"])
         Hc = fx.camera("back", region=t["region"])
@@ -99,10 +134,11 @@ try:
         pg.screenshot(path=str(out / "6b-parts-ticked.png"))
         pg.click("#lines tr.sub [data-look='R1']"); pg.wait_for_selector("#tab-side:not([hidden])")
         pg.wait_for_timeout(600)
-        assert pg.input_value("#look-ref") == "R1"
+        assert pg.inner_text("#sel-part .ref") == "R1"
         pg.screenshot(path=str(out / "6c-look-R1.png"))
         pg.click("button[data-tab=map]"); pg.wait_for_timeout(1500)
         pg.screenshot(path=str(out / "7-map.png"))
+        one_scroller(pg, "map")
         # the board viewer: find a net, click a part's pin, flip to the back
         pg.fill("#bv-q", "SDA"); pg.press("#bv-q", "Enter"); pg.wait_for_selector("#bv-info h3")
         assert "2 pins on 2 parts" in pg.inner_text("#bv-info"), pg.inner_text("#bv-info")
@@ -120,14 +156,15 @@ try:
         pg.wait_for_function("[...document.querySelectorAll('#hist-detail .gallery img')].every(i => i.complete && i.naturalWidth > 0)")
         print("history:", pg.inner_text("#hist-status"), "|", pg.inner_text("#hist-list tbody")[:200].replace("\n", " | "))
         assert "PTC-0042" in pg.inner_text("#hist-detail h2")
-        pg.screenshot(path=str(out / "8-history.png"), full_page=True)
+        pg.screenshot(path=str(out / "8-history.png"))
+        one_scroller(pg, "history")
         # another board of the same design, then back to the first through the history
         pg.click("#hist-detail [data-newfrom]"); pg.wait_for_selector("#tab-files:not([hidden]) #project-box:not([hidden])")
         pg.wait_for_timeout(500)
         assert pg.input_value("#proj-serial") == ""
         pg.screenshot(path=str(out / "9-new-board.png"))
-        pg.click("button[data-tab=history]"); pg.wait_for_selector("#hist-list tr[data-uid]:nth-child(2)")
-        pg.click("#hist-list tr[data-uid]:nth-child(2)"); pg.wait_for_selector("#hist-detail [data-reopen]")
+        pg.click("button[data-tab=history]"); pg.wait_for_function("document.querySelectorAll('#hist-list tr[data-uid]').length >= 2")
+        pg.locator("#hist-list tr[data-uid]").nth(1).click(); pg.wait_for_selector("#hist-detail [data-reopen]")
         pg.click("#hist-detail [data-reopen]"); pg.wait_for_timeout(800)
         st = pg.evaluate("fetch('/api/state').then(r => r.json())")
         assert st["project"]["serial"] == "PTC-0042" and st["sides"]["back"]["aligned"], st["project"]
@@ -144,15 +181,18 @@ try:
         pg.wait_for_function("[...document.querySelectorAll('#ck-flagged img, #ck-photo')].every(i => i.complete && i.naturalWidth > 0)")
         print("check:", pg.inner_text("#ck-sub"), "|", pg.inner_text("#ck-msg"))
         pg.screenshot(path=str(out / "10-check.png"))
+        one_scroller(pg, "check")
         for ref in pg.eval_on_selector_all("#ck-flagged [data-ans=correct]", "bs => bs.map(b => b.dataset.ref)"):
             pg.click(f"#ck-flagged [data-ans={'wrong' if ref in ('C3', 'C7') else 'correct'}][data-ref='{ref}']")
             pg.wait_for_timeout(300)
         assert pg.inner_text("#ck-result") == "FAIL", pg.inner_text("#ck-result")
         print("check result:", pg.inner_text("#ck-result"), "|", pg.inner_text("#ck-sub"))
         pg.screenshot(path=str(out / "11-check-answered.png"))
-        pg.click("[data-goto=history][data-hist=checks]"); pg.wait_for_selector("#hist-detail .badge.FAIL")
+        pg.click("#ck-run details.more summary"); pg.click("[data-goto=history][data-hist=checks]"); pg.wait_for_selector("#hist-detail .badge.FAIL")
         pg.wait_for_timeout(500)
-        pg.screenshot(path=str(out / "12-history-checks.png"), full_page=True)
+        pg.screenshot(path=str(out / "12-history-checks.png"))
+        pg.click("button[data-tab=models]"); pg.wait_for_timeout(800)
+        one_scroller(pg, "models")
         br.close()
 finally:
     srv.terminate()
