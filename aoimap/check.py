@@ -19,6 +19,7 @@ the learning: every answer is kept as a good or bad example of that part (see "l
         <id>.jpg                each example: the part's area of a lined-up photo
 """
 
+import hashlib
 import json
 import re
 import secrets
@@ -737,7 +738,8 @@ class Checks:
         cv2.imwrite(str(d / "aligned.jpg"), aligned, [cv2.IMWRITE_JPEG_QUALITY, 92])
         self._img[(self.cur["uid"], side, "aligned")] = aligned
         st.update(aligned=True, need_points=False, message=msg, H=np.asarray(H).tolist(), results=results, skipped=skipped,
-                  ref_covered=sorted(reference_covered(self.data, board, side, self.cur["reference"])))
+                  ref_covered=sorted(reference_covered(self.data, board, side, self.cur["reference"])),
+                  basis=self._basis(side, parts))
         (d / "result.jpg").write_bytes(overlay(aligned, results))
         flagged = [r["ref"] for r in results if r["status"] not in FINE]
         self._touch(f"{side.capitalize()} checked: {len(results)} parts, "
@@ -755,6 +757,21 @@ class Checks:
                    for p in parts]
         self._models(side, aligned, results)
         return results
+
+    def _basis(self, side, parts) -> dict:
+        """{ref: what its comparison went by}: its outline on the reference, its learned examples, and
+        whether the reference shows it wrong or covered. A part whose basis has changed since it was
+        compared (answered on the reference, the reference re-lined up...) is compared again."""
+        c, board = self.cur, self.cur["board"]
+        d = load_examples(self.data, board, side)
+        ex = {}
+        for e in d["examples"]:
+            ex.setdefault(e["ref"], []).append(e["id"])
+        wrong = set(d["reference_wrong"].get(c["reference"], []))
+        rcov = reference_covered(self.data, board, side, c["reference"])
+        return {p["ref"]: hashlib.sha1(json.dumps([[round(v, 1) for v in p["box"]], sorted(ex.get(p["ref"], [])),
+                                                   p["ref"] in wrong, rcov.get(p["ref"], "")]).encode()).hexdigest()[:12]
+                for p in parts}
 
     def _mark(self, side, results, pending):
         ns, cov = self._ns(side), self._covered(side)
@@ -780,8 +797,10 @@ class Checks:
 
     def refresh(self) -> list[str]:
         """Parts put in the check since this check was run (answered on another board of the design, or
-        added to it) are compared on its photo now, marked new since the check, and counted. The
-        answers already given are left as they are. Returns the parts added ("front C12", ...)."""
+        added to it) are compared on its photo now, marked new since the check, and counted. Parts
+        already in it whose reference outline or learned examples have changed since (see _basis) are
+        compared again. The answers already given are left as they are. Returns the parts added
+        ("front C12", ...)."""
         c = self.cur
         if not c or not any(st.get("aligned") for st in c["sides"].values()):
             return []
@@ -800,21 +819,33 @@ class Checks:
                 new = [p for p in parts if p["ref"] not in have]
                 had_sk = {k["ref"] for k in st.get("skipped", [])}
                 new_sk = [k for k in skipped if k["ref"] not in had_sk and k["ref"] not in have]
-                # a part answered COVERED on the reference since (or no longer): compared again, unless answered here
-                rcov = set(reference_covered(self.data, board, side, c["reference"]))
-                flip = rcov ^ set(st.get("ref_covered", []))
-                redo = [p for p in parts if p["ref"] in flip and p["ref"] in have and not any(
-                    r["ref"] == p["ref"] and (r.get("answer") or r["status"] in ("ns", "covered")) for r in st["results"])]
-                if flip:
-                    st["ref_covered"] = sorted(rcov)
+                # a part whose basis has changed since it was compared (answered on the reference or another
+                # board, the reference re-lined up, COVERED there or no longer): compared again, unless
+                # answered here. A check from before bases were kept compares all its unanswered parts once.
+                rcov = sorted(reference_covered(self.data, board, side, c["reference"]))
+                changed = rcov != st.get("ref_covered")
+                st["ref_covered"] = rcov
+                basis, was = self._basis(side, parts), st.get("basis") or {}
+                answered = {r["ref"] for r in st["results"] if r.get("answer")}
+                redo = [p for p in parts if p["ref"] in have and p["ref"] not in answered and was.get(p["ref"]) != basis[p["ref"]]]
                 if redo:
+                    before = {r["ref"]: r for r in st["results"]}
                     res = self._compare(side, self._aligned(c["uid"], side), redo)
                     self._mark(side, res, pending)
+                    for r in res:
+                        if before[r["ref"]].get("since"):
+                            r["since"] = before[r["ref"]]["since"]
                     by = {r["ref"]: r for r in res}
                     st["results"] = [by.get(r["ref"], r) for r in st["results"]]
                     (folder(self.data, c["uid"]) / side / "result.jpg").write_bytes(overlay(self._aligned(c["uid"], side), st["results"]))
-                    self._touch(f"{side.capitalize()} {', '.join(sorted(by))}: compared again, as the reference's COVERED answer changed")
-                elif flip:
+                    now = [r["ref"] for r in res if r["status"] not in FINE and before[r["ref"]]["status"] in FINE]
+                    cleared = [r["ref"] for r in res if r["status"] in FINE and before[r["ref"]]["status"] not in FINE]
+                    self._touch(f"{side.capitalize()}: {len(res)} part{'' if len(res) == 1 else 's'} compared again with what's been answered since"
+                                + (f"; now flagged: {', '.join(now)}" if now else "")
+                                + (f"; no longer flagged: {', '.join(cleared)}" if cleared else "")
+                                + " (answers given here are kept)")
+                st["basis"] = {**{k: v for k, v in was.items() if k in basis}, **{p["ref"]: basis[p["ref"]] for p in redo}}
+                if redo or changed or st["basis"] != was:
                     save(self.data, c)
                 if not new and not new_sk:
                     continue
@@ -825,6 +856,7 @@ class Checks:
                     for r in res:
                         r["since"] = pj.now()[:10]
                     st["results"] += res
+                    st["basis"] = {**st.get("basis", {}), **{p["ref"]: basis[p["ref"]] for p in new}}
                     (folder(self.data, c["uid"]) / side / "result.jpg").write_bytes(overlay(img, st["results"]))
                     added += [f"{side} {r['ref']}" for r in res]
                 taken = {p["ref"] for p in new}

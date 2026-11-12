@@ -400,6 +400,34 @@ def test_check_learns_from_answers():
     assert [x["board"] for x in c.learned_boards()] == [r["board"] for r in references(b.data)]
 
 
+
+def test_reopened_check_is_compared_again_with_later_answers():
+    from aoimap.check import Checks
+    b = reference_board()
+    c = Checks(b.data)
+    H2 = fx.camera("front", tilt_deg=-3, ppi=280)
+    shot = lambda *rev: cv2.imencode(".png", fx.render("front", H2, reversed_refs=rev))[1].tobytes()
+    c.start(b.project["uid"], "SN-1")
+    c.photo("front", shot("C3"))
+    first = c.cur["uid"]
+    c.answer("front", "D8", "correct")
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["C3"]["status"] == "reversed" and "learned" not in res["C3"]
+    # another board answers C3 the wrong way round as a fault: SN-1, opened again, goes by that answer
+    c.start(b.project["uid"], "SN-2")
+    c.photo("front", shot("C3"))
+    c.answer("front", "C3", "wrong", "tantalum in backwards")
+    c.open(first)
+    res = {r["ref"]: r for r in c.cur["sides"]["front"]["results"]}
+    assert res["C3"]["status"] == "fault" and "tantalum in backwards" in res["C3"]["why"], res["C3"]
+    assert res["D8"]["answer"] == "correct"            # the answer given on SN-1 is kept
+    assert c.cur["log"][-1]["what"].startswith("Front: 1 part compared again"), c.cur["log"][-1]   # only C3
+    # nothing changed since: opening it again compares nothing
+    n = len(c.cur["log"])
+    c2 = Checks(b.data)
+    c2.open(first)
+    assert len(c2.cur["log"]) == n, c2.cur["log"][-1]
+
 def test_learned_examples_kept_per_part_up_to_the_limit():
     import numpy as np
     from aoimap import check as ck
